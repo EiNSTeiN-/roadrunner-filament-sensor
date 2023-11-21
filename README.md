@@ -1,10 +1,18 @@
+# Roadrunner: a high resolution filament sensor for 3D printers
+
 ### Features
 
-* **Ultra precise**: sub-millimeter motion detection
-* **Low cost**: ~12$ USD for parts on Aliexpress
-* **Small and light**: half the size of some comercial products
+* **Ultra precise** sub-millimeter motion detection
+* **Low cost** at approx. ~12$ USD for parts on Aliexpress
+* **Small and light** at half the size of some comercial products
 * Detects **runout reason** between filament runout, filament jams, or partial under-extrusion
 * **Calibrates max flow** with helpful gcode command.
+
+Most 3D printer runout sensors are bulky, slow to trigger, prone to false positives, and have a high detection distance meaning a large amount material is extruded before actually detecting a runout, leading to poor layer adhesion and failed prints.
+
+The Roadrunner is based on a magnetic rotary encoder which can detect sub-millimeter movement in the filament for accurate extrusion length measurement, in addition to a IR sensor which can instantly detect filament runout. With the combination of both sensors and a dedicated RP2040-Zero board for collecting data, the Roadrunner can detect which type of issue is affecting a print, between simply reaching the end of a spool, the filament no longer moving, or the filament moving but at a lower than expected rate of extrusion.
+
+By leveraging the higher precision of the sensor, it's possible to determine the length, speed and volumetric flow that are expected and compare them to the actual measured values in real time which gives us a reasonable approximation of _how much_ the filament is being under-extruded by. A simple to use `CALIBRATE_MAX_FLOW` command is provided to perform free-air extrusion tests and automatically benchmark the maximum volumetric flow of any temperature/nozzle/material combination.
 
 ### Build guide
 
@@ -102,7 +110,7 @@ Before starting, make sure your configured `filament_diameter` is correctly conf
 You can determine the maximum volumetric flow for an extruder/nozzle/filament combination using the following command:
 
 ```
-CALIBRATE_FILAMENT_SENSOR_ROTATION_DISTANCE SENSOR=roadrunner TEMP=210 DURATION=5 START=2 STOP=25 STEP=1
+CALIBRATE_MAX_FLOW SENSOR=roadrunner TEMP=210 DURATION=5 START=2 STOP=25 STEP=1
 ```
 
 * `TEMP`: The temperature to heat up the extruder heater at. Default is 200.
