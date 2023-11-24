@@ -54,14 +54,17 @@ Add the following configuration to your `printer.cfg`:
 [high_resolution_filament_sensor roadrunner]
 extruder: extruder
 #  The extruder to which this sensor is attached
-i2c_address: 64
+uart_rx_pin: P0.0
+uart_tx_pin: P0.1
+#  TX and RX pins for UART communication, leave out if i2c is used (see below).
+#i2c_address: 64
 #  The address of the sensor on the I2C bus, the default is 64 (0x40). Only
 #  change this if you attach more than one sensor on the same I2C bus.
 #i2c_mcu: mcu
 #  The mcu on which the sensor is connected.
-i2c_bus: i2c1
+#i2c_bus: i2c1
 #  The I2C bus to which the sensor is connected on the mcu.
-i2c_timeout: 30000
+#i2c_timeout: 30000
 #  The time after which an I2C timeout error is thrown.
 pause_on_runout: False
 #  Whether or not to pause the print automatically when a runout

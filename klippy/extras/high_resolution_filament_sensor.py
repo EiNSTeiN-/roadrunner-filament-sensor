@@ -5,14 +5,14 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import struct
 import logging
-from . import bus, filament_switch_sensor
+from . import bus, filament_switch_sensor, tmc_uart
 
-DEFAULT_TARGET_ADDR = 0x40
-DEFAULT_SPEED = 100000
+DEFAULT_I2C_TARGET_ADDR = 0x40
+DEFAULT_I2C_SPEED = 100000
 
 CHECK_RUNOUT_TIMEOUT = .250 # read sensor value every 250ms
-HISTORY_SECONDS = 2.
-HISTORY_NUM_EVENTS = int((HISTORY_SECONDS / CHECK_RUNOUT_TIMEOUT) + 1) # history into the past to calculate stats
+HISTORY_SECONDS = 2. # keep past events to calculate stats
+HISTORY_NUM_EVENTS = int((HISTORY_SECONDS / CHECK_RUNOUT_TIMEOUT) + 1)
 
 class MagnetState:
     NOT_DETECTED = 1
@@ -37,9 +37,21 @@ class MagnetState:
         return "%s(value=%s)" % (self.__class__.__name__, repr(self.value))
 
 class SensorRegister:
-    MAGNET_STATE = 0x00
-    FILAMENT_PRESENCE = 0x01
-    ANGLE_CHANGE = 0x02
+    ALL = 0x10
+    # HEALTH = 0x20
+    MAGNET_STATE = 0x21
+    FILAMENT_PRESENCE = 0x22
+    FULL_TURNS = 0x23
+    ANGLE = 0x24
+
+    SIZES = {
+        ALL: 10,
+        # HEALTH: 1,
+        MAGNET_STATE: 1,
+        FILAMENT_PRESENCE: 1,
+        FULL_TURNS: 4,
+        ANGLE: 4,
+    }
 
 class RunoutHelper(filament_switch_sensor.RunoutHelper):
     def cmd_QUERY_FILAMENT_SENSOR(self, gcmd):
@@ -59,6 +71,78 @@ class SensorEvent:
         return "SensorEvent(eventtime=%s, angle_change=%s, distance=%s, epos=%s)" % (
             self.eventtime, self.angle_change, self.distance, self.epos)
 
+class SensorUART(tmc_uart.MCU_TMC_uart_bitbang):
+    def _remove_serial_bits(self, data):
+        # Remove serial start and stop bits to a message in a bytearray
+        mval = pos = 0
+        for d in bytearray(data):
+            mval |= d << pos
+            pos += 8
+
+        pos = 0
+        res = bytearray()
+        for i in range((len(data) * 8) // 10):
+           shift = (i * 10) + 1
+           res.append((mval >> shift) & 0xff)
+        return res
+
+    def _decode_read(self, reg, data):
+        # Extract a uart read response message
+        decoded = self._remove_serial_bits(data)
+        if len(decoded) < 5:
+            # logging.warning("Received too few bytes (%d bytes), need at least 5" % (len(decoded), ))
+            return None
+        if decoded[-1] != self._calc_crc8(decoded[:-1]):
+            # logging.warning("Received wrong CRC: %s" % (decoded.hex(), ))
+            return None
+        if decoded[0] != 0x05 and decoded[1] != 0xff:
+            logging.warning("Received wrong message prefix: %s" % (decoded.hex(), ))
+            return None
+        if decoded[2] != reg:
+            logging.warning("Received response for reg %02x (expected %02x)" % (decoded[2], reg))
+            return None
+        return decoded[3:-1]
+
+    def reg_read(self, _instance_id, addr, reg, reg_length=4):
+        msg = self._encode_read(0xf5, addr, reg)
+        read_length = (((4 + reg_length) * 10) + 7) // 8
+        params = self.tmcuart_send_cmd.send([self.oid, msg, read_length])
+        return self._decode_read(reg, params['read'])
+
+class SensorRotationHelper:
+    def __init__(self, bits, ignore_bits):
+        self.angle_max_value = (1 << bits)
+        self.mask = (1 << ignore_bits) - 1
+        self._turns = 0
+        self._angle = 0 # between zero and angle_max_value
+        self._absolute_angular_position = 0
+        self._angle_change = 0
+    
+    def absolute_angular_position(self):
+        """ The cumulative number of degrees turned since the printer was booted up. """
+        return ((self._absolute_angular_position & ~self.mask) / float(self.angle_max_value) * 360.)
+
+    def angle_change(self):
+        """ The change in angle since clear_angle_change was last called. """
+        return ((self._angle_change & ~self.mask) / float(self.angle_max_value) * 360.)
+
+    def clear_angle_change(self):
+        self._angle_change = 0
+
+    def update_raw(self, turns, angle):
+        """ Set the current number of full turns and the current angle, 
+            compute the change in angular position. """
+        self._turns = turns
+        self._angle = angle
+
+        # calculate angle change since last update
+        abs_angular_pos = (turns * self.angle_max_value) + angle
+        angle_change = abs_angular_pos - self._absolute_angular_position
+        self._absolute_angular_position = abs_angular_pos
+
+        # keep track of cumulative change since value was last reset
+        self._angle_change += angle_change
+
 class HighResolutionFilamentSensor:
     def __init__(self, config):
         self.name = config.get_name().split()[-1]
@@ -69,8 +153,12 @@ class HighResolutionFilamentSensor:
         self.runout_helper.get_status = self.get_status
         self.estimated_print_time = None
 
-        self.i2c = bus.MCU_I2C_from_config(config, DEFAULT_TARGET_ADDR, DEFAULT_SPEED)
-        self.mcu = self.i2c.mcu
+        self.uart = self._lookup_uart_bitbang(config)
+        if self.uart:
+            self.mcu = self.uart.mcu
+        else:
+            self.i2c = bus.MCU_I2C_from_config(config, DEFAULT_I2C_TARGET_ADDR, DEFAULT_I2C_SPEED)
+            self.mcu = self.i2c.mcu
 
         self.extruder_name = config.get('extruder')
         self.invert_direction = config.getboolean('invert_direction', False)
@@ -87,9 +175,11 @@ class HighResolutionFilamentSensor:
         self._underextrusion_start_time = None
         self._underextrusion_detected = False
 
+        # self._sensor_health = -1
         self._magnet_state = MagnetState(0xff)
         self._sensor_connected = False
         self._filament_present = False
+        self._sensor_rotation_helper = SensorRotationHelper(12, 3) # 12 bits of precision, ignore lower 3 bits
 
         self._sensor_update_timer = self.reactor.register_timer(
                 self._sensor_update_event)
@@ -111,7 +201,20 @@ class HighResolutionFilamentSensor:
             "CALIBRATE_MAX_FLOW", "SENSOR", self.name,
             self.cmd_CALIBRATE_MAX_FLOW,
             desc=self.cmd_CALIBRATE_MAX_FLOW_help)
-    
+
+    def _lookup_uart_bitbang(self, config):
+        if not (rx_pin := config.get('uart_rx_pin', None)):
+            return
+        ppins = config.get_printer().lookup_object("pins")
+        rx_pin_params = ppins.lookup_pin(rx_pin, can_pullup=True)
+        tx_pin_params = ppins.lookup_pin(config.get('uart_tx_pin'), can_pullup=True)
+
+        if rx_pin_params['chip'] is not tx_pin_params['chip']:
+            raise ppins.error("%s uart rx and tx pins must be on the same mcu")
+
+        uart = SensorUART(rx_pin_params, tx_pin_params, None)
+        return uart
+
     def reset_position(self):
         self.position = 0.0
 
@@ -137,6 +240,9 @@ class HighResolutionFilamentSensor:
         0.0 to 1.0, 0 means the measured rate matches the expected 
         rate and 1 meaning no extrusion at all when some was expected. """
 
+        if len(self._history) < 2:
+            return 0.0
+
         expected_distance = self._history[0].epos - self._history[-1].epos
         actual_distance = sum([evt.distance for evt in self._history])
 
@@ -152,16 +258,23 @@ class HighResolutionFilamentSensor:
 
         if len(self._history) > 1:
             expected_distance = self._history[0].epos - self._history[-1].epos
+        else:
+            expected_distance = None
         
         if period is not None and period > 0:
             speed = abs(distance) / period
         else:
             speed = None
 
+        if len(self._history) > 0:
+            last_eventtime = self._history[0].eventtime
+        else:
+            last_eventtime = None
+
         return {
             "enabled": bool(self.runout_helper.sensor_enabled),
             "sensor_connected": self._sensor_connected,
-            "last_eventtime": self._history[0].eventtime,
+            "last_eventtime": last_eventtime,
             "magnet_state": str(self._magnet_state),
             "filament_detected": bool(self._filament_present),
             "motion": {
@@ -178,11 +291,31 @@ class HighResolutionFilamentSensor:
             "position": self.position,
         }
 
-    def read_reg1(self, reg):
+    def uart_read_reg(self, reg, length, retries=5):
+        for _ in range(retries):
+            response = self.uart.reg_read(None, 0, reg, length)
+            if response:
+                break
+        if response is None:
+            logging.warning("Error reading from uart, no response received or CRC was invalid.")
+        else:
+            return response
+
+    def uart_read_reg4(self, reg):
+        if data := self.uart_read_reg(reg, 4):
+            val, = struct.unpack('<l', data)
+            return val
+
+    def uart_read_reg1(self, reg):
+        if data := self.uart_read_reg(reg, 1):
+            val, = struct.unpack('<B', data)
+            return val
+
+    def i2c_read_reg1(self, reg):
         params = self.i2c.i2c_read([reg], 1)
         return bytearray(params['response'])[0]
 
-    def read_reg4(self, reg):
+    def i2c_read_reg4(self, reg):
         params = self.i2c.i2c_read([reg], 4)
         return bytearray(params['response'])
 
@@ -199,15 +332,43 @@ class HighResolutionFilamentSensor:
     def _update_state_from_sensor(self):
         eventtime = self.reactor.monotonic()
 
-        self._magnet_state = MagnetState(self.read_reg1(SensorRegister.MAGNET_STATE))
-        self._sensor_connected = self._magnet_state.value != 0xff
-        self._filament_present = self.read_reg1(SensorRegister.FILAMENT_PRESENCE) == 1
+        if self.uart:
+            magnet_state = self.uart_read_reg1(SensorRegister.MAGNET_STATE)
+            filament_presence = self.uart_read_reg1(SensorRegister.FILAMENT_PRESENCE)
+            full_turns = self.uart_read_reg4(SensorRegister.FULL_TURNS)
+            angle = self.uart_read_reg4(SensorRegister.ANGLE)
 
-        angle_change, = struct.unpack('<l', self.read_reg4(SensorRegister.ANGLE_CHANGE))
+            self._sensor_connected = not (magnet_state is None or 
+                                          filament_presence is None or
+                                          full_turns is None or
+                                          angle is None)
+
+            if not self._sensor_connected:
+                return
+
+            # self._sensor_health = health
+            self._magnet_state = MagnetState(magnet_state)
+            self._filament_present = filament_presence == 1
+        else:
+            magnet_state = self.i2c_read_reg1(SensorRegister.MAGNET_STATE)
+            self._sensor_connected = magnet_state != 0xff
+            if not self._sensor_connected:
+                return
+
+            self._magnet_state = MagnetState(magnet_state)
+            self._filament_present = self.i2c_read_reg1(SensorRegister.FILAMENT_PRESENCE) == 1
+            full_turns, = struct.unpack('<l', self.i2c_read_reg4(SensorRegister.FULL_TURNS))
+            angle, = struct.unpack('<l', self.i2c_read_reg4(SensorRegister.ANGLE))
+
+        self._sensor_rotation_helper.update_raw(full_turns, angle)
+        angle_change = self._sensor_rotation_helper.angle_change()
+
+        if angle_change != 0.0:
+            self._sensor_rotation_helper.clear_angle_change()
+            logging.info("update from sensor: turns=%d angle=%d change=%d" % (full_turns, angle, angle_change))
 
         if self.invert_direction:
             angle_change = angle_change * -1
-        angle_change = angle_change / 4096. * 360.
 
         distance = self.rotation_distance * angle_change / 360.
         self.position += distance
@@ -265,11 +426,14 @@ class HighResolutionFilamentSensor:
     def _is_sensor_healthy(self):
         """ The sensor can stop responding if micropython crashes, 
         or the magnet can be too far from the hall rotary encoder for a reading."""
-        return self._sensor_connected and self._magnet_state.value == MagnetState.DETECTED
+        return self._sensor_connected and \
+            self._magnet_state.value == MagnetState.DETECTED
 
     def _sensor_unhealthy_reason(self):
         if not self._sensor_connected:
             return "no data from sensor"
+        # if not self._sensor_health != 0:
+        #     return "sensor reports an internal error (cannot read from magnetic encoder?)"
         if self._magnet_state.value != MagnetState.DETECTED:
             return "magnet %s" % (str(self._magnet_state), )
         return "unknown reason"
@@ -308,7 +472,7 @@ class HighResolutionFilamentSensor:
         if not self._is_sensor_healthy():
             if not self._unhealthy_condition:
                 self._respond_error("Sensor %s has become unhealthy (%s), runout triggered..." % 
-                                    (self._sensor_unhealthy_reason(), ))
+                                    (self.name, self._sensor_unhealthy_reason(), ))
                 self._runout_event_handler(eventtime)
                 self._unhealthy_condition = True
             return
