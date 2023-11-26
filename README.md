@@ -112,6 +112,8 @@ CALIBRATE_FILAMENT_SENSOR_ROTATION_DISTANCE SENSOR=roadrunner TEMP=210 LENGTH=10
 The sensor will heat up the extruder heater to the specified temperature, extrude some filament, 
 and print some stats. Make sure to specify a speed setting low enough to avoid overrunning your hotend, otherwise the rotation_distance will be wrong!
 
+![Preview](images/example_rotation_distance.png)
+
 ##### Max flow calibration
 
 Before starting, make sure your configured `filament_diameter` is correctly configured.
