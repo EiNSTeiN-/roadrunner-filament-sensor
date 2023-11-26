@@ -112,6 +112,8 @@ CALIBRATE_FILAMENT_SENSOR_ROTATION_DISTANCE SENSOR=roadrunner TEMP=210 LENGTH=10
 The sensor will heat up the extruder heater to the specified temperature, extrude some filament, 
 and print some stats. Make sure to specify a speed setting low enough to avoid overrunning your hotend, otherwise the rotation_distance will be wrong!
 
+Adjust the rotation distance until the reported range is acceptable for your setup, for example ±0.3mm seems like a good range for my own printer. While the sensor is high precision, its accuracy and repeatability over multiple readings can be affected by real world factors such as springiness in the PTFE tube, the attachement of the sensor to the body of the extruder, etc.
+
 ![Preview](images/example_rotation_distance.png)
 
 ##### Max flow calibration
@@ -130,4 +132,8 @@ CALIBRATE_MAX_FLOW SENSOR=roadrunner TEMP=210 DURATION=5 START=2 STOP=25 STEP=1
 * `STOP`: The maximum volumetric flow to test. Default is 25.
 * `STEP`: The amount by which to increment the volumetric flow between each test. Default is 1.
 * `COUNT`: How many times to perform the test for each volumetric flow value. Default is 3.
-* `MIN_EXTRUSION_RATE`: The minimum extrusion rate that will be considered acceptable during the test. Used for recommending a maximum volumetric flow. Default is 99.
+* `MIN_EXTRUSION_RATE`: The minimum percentage of measured flow that will be considered acceptable during the test. Used for recommending a maximum volumetric flow. Default is 98.
+
+![Preview](images/example_max_flow.png)
+
+The output shows the expected extrusion (length, speed and flow) against what the sensor measured. In this example, we're extruding PLA at 200 degrees with a Revo Voron hotend, 0.60mm nozzle and Sherpa Mini extruder. The theoretical maximum flow rate for this hotend is around 11mm³/s, but the theoretical value can be different in reality due to multiple factors such as the nozzle diameter and blend of material you're extruding. You can see in the example above, the experimental results very closely match the expectation for this hotend.
