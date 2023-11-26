@@ -1,4 +1,4 @@
-# Roadrunner: a high resolution filament sensor for 3D printers
+# Roadrunner: a high resolution filament motion sensor
 
 ![Preview](images/assembly.png)
 
@@ -6,13 +6,17 @@
 
 * **High resolution** sub-millimeter motion detection
 * **Low cost** at approx. ~12$ USD for parts on Aliexpress
+* **Detect direction** (extruding or reversing) unlike pulse-based motion sensors
+* Detect changes of **0.7 degree** or 0.04mm based on a 24mm rotation distance
+* **Neopixel status indicator** for filament removed, filament inserted, filament moving
 * **Small and light** at half the size of some comercial products
-* Helps you **determine runout reason** between filament runout, filament jams, or partial under-extrusion
+* **Helps determine runout reason** between filament runout, filament jams, or partial under-extrusion
+* **2-wire communication** with mcu, over UART or I2C (suits most boards)
 * **Calibrates max flow** with helpful gcode command.
 
 Most 3D printer motion sensors are bulky, slow to trigger, prone to false positives, and have a high detection distance meaning a large amount material is extruded before actually detecting a runout, leading to poor layer adhesion and failed prints after a runout.
 
-The Roadrunner is based on a magnetic rotary encoder which can detect sub-millimeter movement in the filament for accurate extrusion length measurement, in addition to an IR sensor which can instantly detect filament runout. With the combination of both sensors and a dedicated RP2040-Zero board for collecting data, the Roadrunner can detect which type of issue is affecting a print, between simply reaching the end of a spool, the filament no longer moving, or the filament moving but at a lower than expected rate of extrusion.
+The Roadrunner motion sensor is based on a magnetic rotary encoder which can detect sub-millimeter movement in the filament for accurate extrusion length measurement, in addition to an IR sensor which can instantly detect filament runout. With the combination of both sensors and a dedicated RP2040-Zero board for collecting data, the Roadrunner can detect which type of issue is affecting a print, between simply reaching the end of a spool, the filament no longer moving, or the filament moving but at a lower than expected rate of extrusion.
 
 By leveraging the higher precision of the sensor, it's possible to determine the length, speed and volumetric flow that are expected and compare them to the actual measured values in real time which gives us a reasonable approximation of _how much_ the filament is being under-extruded by. A simple to use `CALIBRATE_MAX_FLOW` command is provided to perform free-air extrusion tests and automatically benchmark the maximum volumetric flow of any temperature/nozzle/material combination.
 
