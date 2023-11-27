@@ -4,6 +4,14 @@
 sudo apt install cmake gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
 ```
 
+### Configuring
+
+Some neopixels have RGB color ordering while others have GRB. When the filament is inserted the LED should ligth green, if it is RED then you should use the GRB ordering. Uncomment the following line in `neopixel.h` and re-run `make` to build the firmware.
+
+```
+#define GRB_LED_ORDER 1
+```
+
 ### Building
 
 ```

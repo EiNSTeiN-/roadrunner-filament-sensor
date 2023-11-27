@@ -160,6 +160,7 @@ int main() {
     stdio_init_all();
 
     neopixel_init();
+    sleep_ms(100);
     neopixel_solid(RED);
 
     printf("Starting...\n");

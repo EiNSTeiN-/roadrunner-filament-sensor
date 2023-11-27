@@ -6,7 +6,6 @@
 
 #include "neopixel.h"
 
-#define IS_RGBW true
 #define WS2812_PIN 16
 
 #define NEOPIXEL_MODE_SOLID 0
@@ -27,7 +26,7 @@ clock_t clock()
 void neopixel_init()
 {
     uint offset = pio_add_program(pio0, &ws2812_program);
-    ws2812_program_init(pio0, 0, offset, WS2812_PIN, 800000, IS_RGBW);
+    ws2812_program_init(pio0, 0, offset, WS2812_PIN, 800000, true);
     neopixel_last_blink_time = clock();
     put_pixel(OFF);
 }
