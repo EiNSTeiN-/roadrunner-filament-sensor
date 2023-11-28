@@ -125,6 +125,22 @@ Now is time to flash the RP2040 and test your work!
 5. A drive named `RPI-RP2` will appear on your computer
 6. Copy the `.uf2` file to the `RPI-RP2` drive, the RP2040 will reboot and the LED will light up.
 
+##### Communication over UART or I2C?
+
+Both firmwares are available to provide options for all MCUs. There's pros and cons to both, the main ones are listed below:
+
+**UART:**
+* Pro: Good option for MCUs with limited number of pins or without native I2C support. I2C SDA/SCL pins are often special-purpose pins whereas any GPIOs can be used for UART TX/RX.
+* Con: The protocol is implemented using bitbang, which is all-around less efficient compared to MCUs that have native I2C support.
+* Con: It's only possible to read 4 bytes at a time over UART, so multiple reads are necessary for every update from the sensor, leading to increased communication overhead.
+* Con: The implementation is more prone to errors during communication with the RP2040, leading to even greater communication overhead due to retries.
+
+**I2C:**
+* Pro: Can be daisy-chained to attach multiple sensors using only 2 pins (requires re-compiling the firmware to get unique I2C IDs).
+* Pro: Can read all data from sensor in one go, which lowers the overhead between the MCU and the host.
+* Pro: During testing, I2C was less prone to communication failures than UART.
+* Con: I2C errors are unrecoverable. In case the RP2040 stops responding or there are delays on the i2c bus for any reason, the printer will perform an emergency stop with an `i2c timeout` error.
+
 ##### Flashing red LED (wiring issues)
 
 The LED will flash red when communication with the AS5600 board is not possible. If this happens, check your wiring.
