@@ -112,11 +112,15 @@ class SensorUART(tmc_uart.MCU_TMC_uart_bitbang):
 class SensorRotationHelper:
     def __init__(self, bits, ignore_bits):
         self.angle_max_value = (1 << bits)
+        self.angle_min_value = (1 << ignore_bits)
         self.mask = (1 << ignore_bits) - 1
         self._turns = 0
         self._angle = 0 # between zero and angle_max_value
         self._absolute_angular_position = 0
         self._angle_change = 0
+    
+    def angular_resolution(self):
+        return (self.angle_min_value / float(self.angle_max_value) * 360.)
     
     def absolute_angular_position(self):
         """ The cumulative number of degrees turned since the printer was booted up. """
@@ -365,7 +369,7 @@ class HighResolutionFilamentSensor:
 
         if angle_change != 0.0:
             self._sensor_rotation_helper.clear_angle_change()
-            logging.info("update from sensor: turns=%d angle=%d change=%d" % (full_turns, angle, angle_change))
+            # logging.info("update from sensor: turns=%d angle=%d change=%d" % (full_turns, angle, angle_change))
 
         if self.invert_direction:
             angle_change = angle_change * -1
@@ -675,7 +679,7 @@ class HighResolutionFilamentSensor:
     def _compute_max_flow_result(self, gcmd, runs):
         suggested_max_flow = None
 
-        cutoff = gcmd.get_float("MIN_EXTRUSION_RATE", 99.)
+        cutoff = gcmd.get_float("MIN_EXTRUSION_RATE", 98.)
         
         stats = []
         for index in range(len(runs)):
@@ -683,25 +687,27 @@ class HighResolutionFilamentSensor:
 
             expected_speed = data['expected_speed']
             expected_distance = data['expected_distance']
+            expected_flow = self._speed_to_volumetric_flow(expected_speed)
             actual_distance = data['actual_distance']
             move_duration = data['actual_duration']
 
-            percent_extruded = actual_distance / float(expected_distance) * 100.
             move_speed = actual_distance / move_duration
+            move_flow = self._speed_to_volumetric_flow(move_speed)
+            percent_flow = move_flow / expected_flow * 100.
 
-            if percent_extruded >= cutoff:
+            if percent_flow >= cutoff:
                 suggested_max_flow = self._speed_to_volumetric_flow(expected_speed)
 
-            stats.append("Run %d/%d - requested=%.2fmm (at speed=%.2fmm/s, flow=%.2fmm³/s), measured=%.2fmm in %.2f seconds (at speed=%.2fmm/, flow=%.2fmm³/s) = %.2f%% extruded" % 
-                         (index + 1, len(runs), expected_distance, expected_speed, self._speed_to_volumetric_flow(expected_speed),
-                          actual_distance, move_duration, move_speed, self._speed_to_volumetric_flow(move_speed), percent_extruded))
+            stats.append("Run %d/%d - requested=%.2fmm (at speed=%.2fmm/s, flow=%.2fmm³/s), measured=%.2fmm in %.2f seconds (at speed=%.2fmm/, flow=%.2fmm³/s) = %.2f%% vol. flow" % 
+                         (index + 1, len(runs), expected_distance, expected_speed, expected_flow,
+                          actual_distance, move_duration, move_speed, move_flow, percent_flow))
         gcmd.respond_info("\n".join(stats))
 
         if suggested_max_flow is None:
-            gcmd.respond_info("None of the measured extrusion moves have resulted in a length above %.2f%% of the requested move, " \
+            gcmd.respond_info("None of the measured extrusion moves have resulted in a vol. flow above %.2f%% of the requested flow, " \
                               "perhaps you should calibrate the sensor e-steps or double-check your hardware?" % (cutoff, ))
         else:
-            gcmd.respond_info("Suggested maximum volumetric flow for extrusion rate above %.2f%%: %.2f" % (cutoff, suggested_max_flow, ))
+            gcmd.respond_info("Suggested maximum volumetric flow for measured vol. flow above %.2f%% of expected value: %.2f" % (cutoff, suggested_max_flow, ))
 
 def load_config_prefix(config):
     return HighResolutionFilamentSensor(config)
