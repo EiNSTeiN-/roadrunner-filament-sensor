@@ -100,13 +100,13 @@ Add the female JST-XH header to `wire_cover.stl`, and solder wires to the connec
 
 Make sure you solder on the correct pads as pictured. The numbering starts at 0 and the silkscreen alignment can be misleading.
 
-<img src="../images/manual/016_assembled.jpg" height="200">
-
-Fit the wires into the channel built into the wire cover, make sure the wires aren't getting pinched.
-
 <img src="../images/manual/016_soldered_2.jpg" height="200">
 
 Add the M3 x 6mm BHCS and M3 x 10mm BHCS to the secure wire cover.
+
+<img src="../images/manual/016_assembled.jpg" height="200">
+
+Fit the wires into the channel built into the wire cover, make sure the wires aren't getting pinched.
 
 <img src="../images/manual/016_assembled_2.jpg" height="200">
 
