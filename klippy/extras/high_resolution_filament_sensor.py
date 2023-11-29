@@ -315,12 +315,8 @@ class HighResolutionFilamentSensor:
             val, = struct.unpack('<B', data)
             return val
 
-    def i2c_read_reg1(self, reg):
-        params = self.i2c.i2c_read([reg], 1)
-        return bytearray(params['response'])[0]
-
-    def i2c_read_reg4(self, reg):
-        params = self.i2c.i2c_read([reg], 4)
+    def i2c_read_reg(self, reg, length):
+        params = self.i2c.i2c_read([reg], length)
         return bytearray(params['response'])
 
     def _get_extruder_pos(self, eventtime=None):
@@ -354,15 +350,20 @@ class HighResolutionFilamentSensor:
             self._magnet_state = MagnetState(magnet_state)
             self._filament_present = filament_presence == 1
         else:
-            magnet_state = self.i2c_read_reg1(SensorRegister.MAGNET_STATE)
+            data = self.i2c_read_reg(SensorRegister.ALL, 10)
+            if len(data) != 10:
+                self._sensor_connected = False
+                logging.warning("Update from sensor failed, expected 10 bytes but got %d: '%s'" % (len(data), data.hex(), ))
+                return
+
+            magnet_state, filament_presence, full_turns, angle = struct.unpack('<BBll', data)
+
             self._sensor_connected = magnet_state != 0xff
             if not self._sensor_connected:
                 return
 
             self._magnet_state = MagnetState(magnet_state)
-            self._filament_present = self.i2c_read_reg1(SensorRegister.FILAMENT_PRESENCE) == 1
-            full_turns, = struct.unpack('<l', self.i2c_read_reg4(SensorRegister.FULL_TURNS))
-            angle, = struct.unpack('<l', self.i2c_read_reg4(SensorRegister.ANGLE))
+            self._filament_present = filament_presence == 1
 
         self._sensor_rotation_helper.update_raw(full_turns, angle)
         angle_change = self._sensor_rotation_helper.angle_change()
