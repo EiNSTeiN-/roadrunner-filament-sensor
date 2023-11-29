@@ -50,7 +50,7 @@ Complete the main body assembly by sliding the idler onto the 3mm shaft, screw t
 
 ### 4. Electronics
 
-All we have left is to solder the electronics together. We will follow the schematics below:
+The next step is to solder the electronics as shown here:
 
 <img src="../images/schematics.jpg" height="350">
 
@@ -66,7 +66,7 @@ Prepare the RP2040-Zero and a 4-pin segment of 90-degree 0.1" header. The middle
 
 <img src="../images/manual/012_parts.jpg" height="200">
 
-Line up the 90-degree header with both boards and solder in place. Pay attention to solder on pins 9 and 12.
+Line up the 90-degree header with both boards and solder in place. Pay attention to solder on pins 9 and 12 (it's easy to be off-by-one and solder on the wrong pins).
 
 <img src="../images/manual/012_soldered_2.jpg" height="200">
 
@@ -86,7 +86,7 @@ The red (5V) and black (GND) wires should reach the bottom edge of the PCB, and 
 
 <img src="../images/manual/014_soldered_2.jpg" height="200">
 
-Add two wires between the RP2040 pins GP10 and GP11 to the AS5600 pins SDA and SCL. Note that they are reversed so the wires should cross each other!
+Add two wires between the RP2040 pins GP10/GP11 and the AS5600 pins SDA/SCL. Note that the I2C pin order on the two boards are reversed so the wires should cross each other!
 
 <img src="../images/manual/015_soldered.jpg" height="200">
 
@@ -94,19 +94,19 @@ Solder the 5V and GND pads on the AS5600 board to the 5V and GND pads on the RP2
 
 <img src="../images/manual/015_soldered_2.jpg" height="200">
 
-Add the female JST-XH header to `wire_cover.stl`, and solder wires to the connector. The red (5V) and black (GND) wires are soldered to the RP2040 5V and GND pads, the green and blue wires are soldered to the RP2040 GP4/5 pads.
+Add the female JST-XH header to `wire_cover.stl`, and solder wires to the connector. The red (5V) and black (GND) wires are soldered to the RP2040 5V and GND pads, the green and blue wires are soldered to the RP2040 GP4/GP5 pads.
 
 <img src="../images/manual/016_soldered_1.jpg" height="200">
 
 Make sure you solder on the correct pads as pictured. The numbering starts at 0 and the silkscreen alignment can be misleading.
 
-<img src="../images/manual/016_soldered_2.jpg" height="200">
-
-Screw the wire cover under the sensor.
-
 <img src="../images/manual/016_assembled.jpg" height="200">
 
-Take care of fitting the wires into the channel without pinching them.
+Fit the wires into the channel built into the wire cover, make sure the wires aren't getting pinched.
+
+<img src="../images/manual/016_soldered_2.jpg" height="200">
+
+Add the M3 x 6mm BHCS and M3 x 10mm BHCS to the secure wire cover.
 
 <img src="../images/manual/016_assembled_2.jpg" height="200">
 
@@ -114,7 +114,7 @@ Push the wires neatly snug together, without covering the RP2040 buttons or the 
 
 <img src="../images/manual/017_wires.jpg" height="200">
 
-### Flashing
+### Flashing and testing
 
 Now is time to flash the RP2040 and test your work!
 
@@ -127,7 +127,7 @@ Now is time to flash the RP2040 and test your work!
 
 ##### Communication over UART or I2C?
 
-Both firmwares are available to provide options for all MCUs. There's pros and cons to both, the main ones are listed below:
+Both firmwares are available to provide options for all MCUs and toolhead boards. There's pros and cons to both, the main ones are listed below:
 
 **UART:**
 * Pro: Good option for MCUs with limited number of pins or without native I2C support. I2C SDA/SCL pins are often special-purpose pins whereas any GPIOs can be used for UART TX/RX.
@@ -141,17 +141,21 @@ Both firmwares are available to provide options for all MCUs. There's pros and c
 * Pro: During testing, I2C was less prone to communication failures than UART.
 * Con: I2C errors are unrecoverable. In case the RP2040 stops responding or there are delays on the i2c bus for any reason, the printer will perform an emergency stop with an `i2c timeout` error.
 
+If you have available pins on your MCU, I2C is recommended. Otherwise use UART.
+
 ##### Flashing red LED (wiring issues)
 
-The LED will flash red when communication with the AS5600 board is not possible. If this happens, check your wiring.
+The LED will flash red when there is an error with the AS5600 board:
 
 <img src="../images/manual/018_firmware_error.gif" height="200">
 
-Possible reasons for this state:
+Possible reasons for this state include:
 1. The AS5600 is not responding over the I2C bus.
 2. The magnet is too weak, too strong or not detected at all.
 
-##### Solid LED
+If you assembled the sensor correctly, the magnet should be in the correct place, so the most likely reason for this error is an issue with the wiring for the AS5600 board.
+
+##### Solid red, green or blue LED
 
 If everything is soldered correctly, moving the idler into and out of the IR sensor should toggle the LED between blue and green.
 
@@ -159,7 +163,7 @@ Troubleshooting:
 1. If the LED stays the same color when the IR sensor is obstructed, the IR sensor may be soldered incorrectly.
 2. If the LED switches between red and blue instead of green and blue, you may have a RP2040-Zero clone with an GRB neopixel. Simply flash the GRB firmware variant and that should fix the issue.
 
-The last step is to trim the lever arm slightly so inserting the filament will push the arm out of the way of the IR sensor, but removing the filament will obstruct the sensor.
+Once the lever arm can be actioned by had, test with a piece of filament. Trim the lever arm slightly so inserting the filament will push the arm out of the way of the IR sensor, and removing the filament will obstruct the sensor.
 
 <img src="../images/manual/019_IR_arm.jpg" height="200">
 
