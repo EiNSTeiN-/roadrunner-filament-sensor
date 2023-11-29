@@ -16,6 +16,7 @@
 #include "as5600.h"
 #include "ir_sensor.h"
 #include "tmcuart.h"
+#include "i2c_target.h"
 
 /* leave commented for UART communication with the printer, uncomment for I2C */
 //#define IS_I2C_TARGET 1
