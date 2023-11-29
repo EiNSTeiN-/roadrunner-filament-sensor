@@ -163,7 +163,7 @@ Troubleshooting:
 1. If the LED stays the same color when the IR sensor is obstructed, the IR sensor may be soldered incorrectly.
 2. If the LED switches between red and blue instead of green and blue, you may have a RP2040-Zero clone with an GRB neopixel. Simply flash the GRB firmware variant and that should fix the issue.
 
-Once the lever arm can be actioned by had, test with a piece of filament. Trim the lever arm slightly so inserting the filament will push the arm out of the way of the IR sensor, and removing the filament will obstruct the sensor.
+Once the lever arm can be actioned by hand, test with a piece of filament. Trim the lever arm slightly so inserting the filament will push the arm out of the way of the IR sensor, and removing the filament will obstruct the sensor.
 
 <img src="../images/manual/019_IR_arm.jpg" height="200">
 
