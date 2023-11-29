@@ -32,7 +32,7 @@ Order the cheapest you can find of the following items:
 
 Notes:
 1. The linked AS5600 breakout board comes with a 3mm diameter magnet. If you must purchase a magnet separately, make sure it has its poles oriented across its diameter, not across the thickness.
-2. The IR sensor does not require any of the usual MK3S hardware although many kits on Aliexpress are sold with the extra hardware. Only a small 2mm self-tapping screw is needed to attach the PCB is needed for the build.
+2. The IR sensor does not require any of the usual MK3S hardware although many kits on Aliexpress are sold with the extra hardware. Only a small 2mm self-tapping screw is needed to attach the PCB.
 
 ### Hardware
 
