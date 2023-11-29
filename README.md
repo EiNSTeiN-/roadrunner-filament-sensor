@@ -9,7 +9,7 @@
 * **Detect direction** (extruding or reversing) unlike pulse-based motion sensors
 * Detect changes of **0.7 degree** or 0.04mm based on a 24mm rotation distance
 * **Neopixel status indicator** for filament removed, filament inserted, filament moving
-* **Small and light** at half the size of some comercial products
+* **Small and light** at half the size of some commercial products
 * **Helps determine runout reason** between filament runout, filament jams, or partial under-extrusion
 * **2-wire communication** with mcu, over UART or I2C (suits most boards)
 * **Calibrates max flow** with helpful gcode command.
