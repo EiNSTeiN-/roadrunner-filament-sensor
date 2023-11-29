@@ -29,3 +29,24 @@ pico_generate_pio_header(roadrunner_v1_uart_grb ${CMAKE_CURRENT_LIST_DIR}/ws2812
 target_sources(roadrunner_v1_uart_grb PRIVATE neopixel.c as5600.c ir_sensor.c tmcuart.c main.c)
 target_link_libraries(roadrunner_v1_uart_grb PRIVATE pico_stdlib hardware_pio hardware_i2c)
 pico_add_extra_outputs(roadrunner_v1_uart_grb)
+
+# I2C with RGB LED ordering
+add_executable(roadrunner_v1_i2c_rgb)
+pico_enable_stdio_usb(roadrunner_v1_i2c_rgb 1)
+pico_enable_stdio_uart(roadrunner_v1_i2c_rgb 0)
+target_compile_definitions(roadrunner_v1_i2c_rgb PUBLIC IS_I2C_TARGET=1)
+pico_generate_pio_header(roadrunner_v1_i2c_rgb ${CMAKE_CURRENT_LIST_DIR}/ws2812.pio OUTPUT_DIR ${CMAKE_CURRENT_LIST_DIR}/generated)
+target_sources(roadrunner_v1_i2c_rgb PRIVATE neopixel.c as5600.c ir_sensor.c i2c_target.c main.c)
+target_link_libraries(roadrunner_v1_i2c_rgb PRIVATE pico_i2c_slave pico_stdlib hardware_pio hardware_i2c)
+pico_add_extra_outputs(roadrunner_v1_i2c_rgb)
+
+# I2C with GRB LED ordering
+add_executable(roadrunner_v1_i2c_grb)
+pico_enable_stdio_usb(roadrunner_v1_i2c_grb 1)
+pico_enable_stdio_uart(roadrunner_v1_i2c_grb 0)
+target_compile_definitions(roadrunner_v1_i2c_grb PUBLIC IS_I2C_TARGET=1)
+target_compile_definitions(roadrunner_v1_i2c_grb PUBLIC GRB_LED_ORDER=1)
+pico_generate_pio_header(roadrunner_v1_i2c_grb ${CMAKE_CURRENT_LIST_DIR}/ws2812.pio OUTPUT_DIR ${CMAKE_CURRENT_LIST_DIR}/generated)
+target_sources(roadrunner_v1_i2c_grb PRIVATE neopixel.c as5600.c ir_sensor.c i2c_target.c main.c)
+target_link_libraries(roadrunner_v1_i2c_grb PRIVATE pico_i2c_slave pico_stdlib hardware_pio hardware_i2c)
+pico_add_extra_outputs(roadrunner_v1_i2c_grb)

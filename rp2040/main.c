@@ -17,6 +17,9 @@
 #include "ir_sensor.h"
 #include "tmcuart.h"
 
+/* leave commented for UART communication with the printer, uncomment for I2C */
+//#define IS_I2C_TARGET 1
+
 #define READ_ALL                    0x10
 // #define READ_HEALTH                 0x20
 #define READ_MAGNET_STATE           0x21
@@ -44,7 +47,7 @@ struct state_t {
 
     int32_t full_turns; // number of times the magnet has crossed the zero point
     int32_t angle; // current angle value
-} state;
+} __attribute__((packed)) state;
 
 clock_t last_update;
 
@@ -133,27 +136,27 @@ void update_loop()
     }
 }
 
-void send_response(uint8_t reg, uint8_t *buf, size_t length)
+#define MEMCPY_REG_DATA(__buf, __data, __length) \
+    { \
+        __length = sizeof(__data); \
+        memcpy(__buf, (uint8_t *)&__data, sizeof(__data)); \
+    }
+
+void prepare_register_data(uint8_t reg, uint8_t *buf, size_t *length)
 {
-    uint8_t data[32];
-
-    if((length + 4) > sizeof(data))
-        return;
-
-    memset(&data, 0, sizeof(data));
-    data[0] = 0x05;
-    data[1] = 0xff;
-    data[2] = reg;
-
-    for(size_t i = 0; i < length; i++)
-        data[i+3] = buf[i];
-
-    data[length+3] = tmcuart_crc8((uint8_t *)&data, length+3);
-
-    // klipper tmcuart bitbang is sensitive to timing, avoid replying too fast
-    sleep_us(500);
-
-    tmcuart_write((uint8_t *)&data, length+4);
+    if(reg == READ_ALL) {
+        MEMCPY_REG_DATA(buf, state, *length);
+    // } else if(reg == READ_HEALTH) {
+    //     MEMCPY_REG_DATA(buf, state.health, *length);
+    } else if(reg == READ_MAGNET_STATE) {
+        MEMCPY_REG_DATA(buf, state.magnet_state, *length);
+    } else if(reg == READ_FILAMENT_PRESENCE) {
+        MEMCPY_REG_DATA(buf, state.filament_present, *length);
+    } else if(reg == READ_FULL_TURNS) {
+        MEMCPY_REG_DATA(buf, state.full_turns, *length);
+    } else if(reg == READ_ANGLE) {
+        MEMCPY_REG_DATA(buf, state.angle, *length);
+    }
 }
 
 int main() {
@@ -173,8 +176,13 @@ int main() {
     note_last_updated_time();
 
     as5600_init();
-    tmcuart_init();
     ir_sensor_init();
+
+#if defined(IS_I2C_TARGET) && IS_I2C_TARGET
+    i2c_target_init();
+#else
+    tmcuart_init();
+#endif
 
     sleep_ms(1000);
 
@@ -200,32 +208,8 @@ int main() {
 
         neopixel_loop();
 
-        if (tmcuart_sync()) {
-            uint8_t cmd[4] = { 0xf5, 0, 0, 0 };
-            uint8_t addr, reg, crc;
-            tmcuart_read(&cmd[1], 3);
-
-            addr = cmd[1];
-            reg = cmd[2];
-            crc = cmd[3];
-            if(crc != tmcuart_crc8((uint8_t *)&cmd, 3)) {
-                printf("received addr=%02x reg=%02x crc=%02x (BAD CRC)\n", addr, reg, crc);
-                continue;
-            }
-
-            if(reg == READ_ALL) {
-                send_response(reg, (uint8_t *)&state, sizeof(state));
-            // } else if(reg == READ_HEALTH) {
-            //     send_response(reg, (uint8_t *)&state.health, 1);
-            } else if(reg == READ_MAGNET_STATE) {
-                send_response(reg, (uint8_t *)&state.magnet_state, 1);
-            } else if(reg == READ_FILAMENT_PRESENCE) {
-                send_response(reg, (uint8_t *)&state.filament_present, 1);
-            } else if(reg == READ_FULL_TURNS) {
-                send_response(reg, (uint8_t *)&state.full_turns, 4);
-            } else if(reg == READ_ANGLE) {
-                send_response(reg, (uint8_t *)&state.angle, 4);
-            }
-        }
+#if !defined(IS_I2C_TARGET) || !IS_I2C_TARGET
+        tmcuart_loop();
+#endif
     }
 }
