@@ -186,3 +186,7 @@ Lastly, add the spring assembly
 <img src="../images/manual/022_assembled.jpg" height="200">
 
 Your sensor is completed!
+
+### Connect to printer
+
+Connection to the printer is dependent on which board the sensor will be connected to. Check the [wiring manual](./WIRING.md) for information on how to connect the sensor to your toolhead board or your printer controller board.
