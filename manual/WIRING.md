@@ -24,7 +24,7 @@ Schematics: [SB2209](https://github.com/bigtreetech/EBB/blob/master/EBB%20SB2240
 
 Schematics: [SB2209](https://github.com/bigtreetech/EBB/blob/master/EBB%20SB2209%20CAN%20(RP2040)/Hardware/EBB%20SB2209%20CAN%20V1.0%EF%BC%88RP2040%EF%BC%89-Pin.png)
 
-There are no good options for I2C on this board, the least bad option is to use USB-C for communication and use the CAN-L/CAN-H pins for I2C. Unless you only need one hotend fan or can relocate one fan to another pin.
+There are no good options for I2C on this board, the least bad option is to use USB-C for communication with the klipper host, which frees up the CAN-L/CAN-H pins to connect the sensor over I2C. Unless you only need one hotend fan or can relocate one fan to another pin.
 
 | Klipper bus name | Connector | SCL | SDA | Notes |
 |---|---|---|---|---|
