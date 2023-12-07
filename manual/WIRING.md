@@ -2,8 +2,6 @@
 
 There are two ways to communicate with the Roadrunner sensor: I2C or UART. Each has a respective firmware variant, and depending on which variant is flashed on the rp2040 board, you'll need to connect the Roadrunner to the printer correctly. 
 
-In this document you'll find some wiring suggestions for 
-
 ### UART
 
 Any 2 GPIOs can be used for UART communication, which makes it very convenient on some boards. UART communication can be less reliable and requires more overhead, so I2C is preferred if possible. Find the schematics for the mcu your Roadrunner sensor will be connected to, and find any 4-pin (or more) connector which has `5V`, `GND` and two GPIOs available.
