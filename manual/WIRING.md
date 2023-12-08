@@ -20,9 +20,10 @@ Schematics: [SB2209](https://github.com/bigtreetech/EBB/blob/master/EBB%20SB2240
 
 | Klipper bus name | Connector | SCL | SDA | Notes |
 |---|---|---|---|---|
-| i2c1 | Endstop | Stop1 (PB6) | Stop3 (PB7) | Less convenient since each pin is located on a different connector |
-| i2c1a | BLTouch | PROBE (PB8) | SERVOS (PB9) | |
-| i2c2 | SPI_OUT | CLK (PB10) | MOSI (PB11) | |
+| i2c1_PB6_PB7 | Endstop | Stop1 (PB6) | Stop3 (PB7) | Less convenient since each pin is located on a different connector |
+| i2c1_PB8_PB9 | BLTouch | PROBE (PB8) | SERVOS (PB9) | |
+| i2c1_PA9_PA10 | SPI_OUT | IO (PA9) | NSS (PA10) | |
+| i2c2_PB10_PB11 | SPI_OUT | CLK (PB10) | MOSI (PB11) | |
 
 #### BTT SB2209 (rp2040 mcu)
 
