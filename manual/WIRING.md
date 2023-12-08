@@ -8,7 +8,11 @@ Any 2 GPIOs can be used for UART communication, which makes it very convenient o
 
 ### I2C
 
-Generally, native I2C communication requires special purpose pins to be available on a microcontroller. Some boards have a dedicated connector available for I2C, but many do not. Below are some of the common boards you might want to connect this sensor to.
+Native I2C communication requires special purpose pins to be available on a microcontroller. Some boards have a dedicated connector available for I2C, but many do not.
+
+To find out which buses are compiled into your version of klipper, download `klipper.log` and search for `BUS_PINS_i2c`. There will be one line for each MCU with all i2c buses listed by name with the corresponding pins.
+
+Below are some of the common boards you might want to connect this sensor to.
 
 #### BTT SB2209/SB2240 (stm32 mcu)
 
@@ -32,25 +36,24 @@ There are no good options for I2C on this board, the least bad option is to use 
 | i2c0d | SB0000 | Parts cooling fan (gpio13) | TACH (gpio12) | Only usable when PWM fan and parts cooling fan are not used on SB0000 |
 | i2c1d | SB0000 | PWM (gpio15) | Hotend Fan (gpio14) | Only usable when PWM fan and hotend fans are not used on SB0000 |
 
-#### BTT EBB36/42 V0 (stm32 mcu)
+#### BTT EBB36/42 V1.0 (stm32 mcu)
 
 Schematics: [EBB36](https://github.com/bigtreetech/EBB/blob/master/EBB%20CAN%20V1.0%20(STM32F072)/EBB36%20CAN%20V1.0/Hardware/EBB36%20CAN%20V1.0-PIN.png), [EBB42](https://github.com/bigtreetech/EBB/blob/master/EBB%20CAN%20V1.0%20(STM32F072)/EBB42%20CAN%20V1.0/Hardware/EBB42%20CAN%20V1.0-PIN.png)
 
 | Klipper bus name | Connector | SCL | SDA | Notes |
 |---|---|---|---|---|
-| i2c1 | I2C | PB6 | PB7 | Best option |
-| i2c1a | CAN | RX (PB8) | TX (PB9) | Only usable when the board is connected via USB-C |
+| i2c1_PB6_PB7 | I2C | PB6 | PB7 | Best option |
+| i2c1_PB8_PB9 | CAN | RX (PB8) | TX (PB9) | Only usable when the board is connected via USB-C |
 
 #### BTT EBB36/42 V1.1 / V1.2 (stm32 mcu)
 
 Schematics: [EBB36](https://github.com/bigtreetech/EBB/blob/master/EBB%20CAN%20V1.1%20(STM32G0B1)/EBB36%20CAN%20V1.1/Hardware/EBB36%20CAN%20V1.1%26V1.2-PIN.png), [EBB42](https://github.com/bigtreetech/EBB/blob/master/EBB%20CAN%20V1.1%20(STM32G0B1)/EBB42%20CAN%20V1.1/Hardware/EBB42%20CAN%20V1.1%26V1.2-PIN.png)
 
-The port labeled I2C on this board is not a hardware I2C bus, so it's preferrable not to use it.
-
 | Klipper bus name | Connector | SCL | SDA | Notes |
 |---|---|---|---|---|
-| i2c1 | Endstop | PB6 | PB7 | |
-| i2c1a | Probe | PB8 | PB9 | |
+| i2c3_PB3_PB4 | I2C | PB3 | PB4 | Best option |
+| i2c1_PB6_PB7 | Endstop | PB6 | PB7 | |
+| i2c1_PB8_PB9 | Probe | PB8 | PB9 | |
 
 #### Mellow Fly SB2040 V2 (rp2040 mcu)
 
