@@ -10,7 +10,7 @@ from . import bus, filament_switch_sensor, tmc_uart
 DEFAULT_I2C_TARGET_ADDR = 0x40
 DEFAULT_I2C_SPEED = 100000
 
-CHECK_RUNOUT_TIMEOUT = .250 # read sensor value every 250ms
+CHECK_RUNOUT_TIMEOUT = .100 # read sensor value at this interval
 HISTORY_SECONDS = 2. # keep past events to calculate stats
 HISTORY_NUM_EVENTS = int((HISTORY_SECONDS / CHECK_RUNOUT_TIMEOUT) + 1)
 
@@ -270,15 +270,15 @@ class HighResolutionFilamentSensor:
         else:
             speed = None
 
-        if len(self._history) > 0:
-            last_eventtime = self._history[0].eventtime
-        else:
-            last_eventtime = None
+        # if len(self._history) > 0:
+        #     last_eventtime = self._history[0].eventtime
+        # else:
+        #     last_eventtime = None
 
         return {
             "enabled": bool(self.runout_helper.sensor_enabled),
             "sensor_connected": self._sensor_connected,
-            "last_eventtime": last_eventtime,
+            # "last_eventtime": last_eventtime,
             "magnet_state": str(self._magnet_state),
             "filament_detected": bool(self._filament_present),
             "motion": {
