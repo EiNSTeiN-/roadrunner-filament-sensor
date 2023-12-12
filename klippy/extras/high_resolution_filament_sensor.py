@@ -11,7 +11,7 @@ DEFAULT_I2C_TARGET_ADDR = 0x40
 DEFAULT_I2C_SPEED = 100000
 
 CHECK_RUNOUT_TIMEOUT = .100 # read sensor value at this interval
-HISTORY_SECONDS = 2. # keep past events to calculate stats
+HISTORY_SECONDS = 1. # keep past events to calculate stats
 HISTORY_NUM_EVENTS = int((HISTORY_SECONDS / CHECK_RUNOUT_TIMEOUT) + 1)
 
 class MagnetState:
@@ -118,10 +118,10 @@ class SensorRotationHelper:
         self._angle = 0 # between zero and angle_max_value
         self._absolute_angular_position = 0
         self._angle_change = 0
-    
+
     def angular_resolution(self):
         return (self.angle_min_value / float(self.angle_max_value) * 360.)
-    
+
     def absolute_angular_position(self):
         """ The cumulative number of degrees turned since the printer was booted up. """
         return ((self._absolute_angular_position & ~self.mask) / float(self.angle_max_value) * 360.)
@@ -134,7 +134,7 @@ class SensorRotationHelper:
         self._angle_change = 0
 
     def update_raw(self, turns, angle):
-        """ Set the current number of full turns and the current angle, 
+        """ Set the current number of full turns and the current angle,
             compute the change in angular position. """
         self._turns = turns
         self._angle = angle
@@ -228,7 +228,7 @@ class HighResolutionFilamentSensor:
             return self._history[0].eventtime - self._history[-1].eventtime
         else:
             return None
-        
+
     def get_motion_direction(self, distance):
         if distance == 0.0:
             return "idle"
@@ -236,12 +236,12 @@ class HighResolutionFilamentSensor:
             return "extruding"
         else:
             return "reversing"
-    
+
     def _measured_underextrusion_rate(self):
-        """ Return a measure of how much we are actually extruding 
-        compared to how much was expected over the events kept in 
-        the history buffer. The rate is returned as a value from 
-        0.0 to 1.0, 0 means the measured rate matches the expected 
+        """ Return a measure of how much we are actually extruding
+        compared to how much was expected over the events kept in
+        the history buffer. The rate is returned as a value from
+        0.0 to 1.0, 0 means the measured rate matches the expected
         rate and 1 meaning no extrusion at all when some was expected. """
 
         if len(self._history) < 2:
@@ -264,21 +264,15 @@ class HighResolutionFilamentSensor:
             expected_distance = self._history[0].epos - self._history[-1].epos
         else:
             expected_distance = None
-        
+
         if period is not None and period > 0:
-            speed = abs(distance) / period
+            speed = distance / period
         else:
             speed = None
-
-        # if len(self._history) > 0:
-        #     last_eventtime = self._history[0].eventtime
-        # else:
-        #     last_eventtime = None
 
         return {
             "enabled": bool(self.runout_helper.sensor_enabled),
             "sensor_connected": self._sensor_connected,
-            # "last_eventtime": last_eventtime,
             "magnet_state": str(self._magnet_state),
             "filament_detected": bool(self._filament_present),
             "motion": {
@@ -338,17 +332,13 @@ class HighResolutionFilamentSensor:
             full_turns = self.uart_read_reg4(SensorRegister.FULL_TURNS)
             angle = self.uart_read_reg4(SensorRegister.ANGLE)
 
-            self._sensor_connected = not (magnet_state is None or 
+            self._sensor_connected = not (magnet_state is None or
                                           filament_presence is None or
                                           full_turns is None or
                                           angle is None)
 
             if not self._sensor_connected:
                 return
-
-            # self._sensor_health = health
-            self._magnet_state = MagnetState(magnet_state)
-            self._filament_present = filament_presence == 1
         else:
             data = self.i2c_read_reg(SensorRegister.ALL, 10)
             if len(data) != 10:
@@ -362,8 +352,8 @@ class HighResolutionFilamentSensor:
             if not self._sensor_connected:
                 return
 
-            self._magnet_state = MagnetState(magnet_state)
-            self._filament_present = filament_presence == 1
+        self._magnet_state = MagnetState(magnet_state)
+        self._filament_present = filament_presence == 1
 
         self._sensor_rotation_helper.update_raw(full_turns, angle)
         angle_change = self._sensor_rotation_helper.angle_change()
@@ -402,7 +392,7 @@ class HighResolutionFilamentSensor:
     def _handle_not_printing(self, print_time):
         logging.info("[%s] not printing" % (self.__class__.__name__, ))
         self._is_printing = False
-    
+
     def _respond_error(self, msg):
         logging.warning(msg)
         lines = msg.strip().split('\n')
@@ -429,7 +419,7 @@ class HighResolutionFilamentSensor:
         self._exec_gcode(pause_prefix, self.runout_helper.runout_gcode)
 
     def _is_sensor_healthy(self):
-        """ The sensor can stop responding if micropython crashes, 
+        """ The sensor can stop responding if micropython crashes,
         or the magnet can be too far from the hall rotary encoder for a reading."""
         return self._sensor_connected and \
             self._magnet_state.value == MagnetState.DETECTED
@@ -452,31 +442,31 @@ class HighResolutionFilamentSensor:
         if rate > self.underextrusion_max_rate:
             if self._underextrusion_start_time is None:
                 self._underextrusion_start_time = self.reactor.monotonic()
-                self._respond_error("Detected %.2f%% underextrusion starting at %.2f" % 
+                self._respond_error("Detected %.2f%% underextrusion starting at %.2f" %
                                     (rate * 100, self._underextrusion_start_time))
                 return False
             elif self._underextrusion_start_time + self.underextrusion_period < self.reactor.monotonic():
                 if not self._underextrusion_detected:
-                    self._respond_error("Detected sustained underextrusion for over %.2fs" % 
+                    self._respond_error("Detected sustained underextrusion for over %.2fs" %
                                         (self.underextrusion_period, ))
                     self._underextrusion_detected = True
                 return True
         elif self._underextrusion_start_time is not None:
-            self.gcode.respond_info("Underextrusion cleared after %.2fs" % 
+            self.gcode.respond_info("Underextrusion cleared after %.2fs" %
                                     (self.reactor.monotonic() - self._underextrusion_start_time), True)
             self._underextrusion_start_time = None
             self._underextrusion_detected = False
-        
+
         return False
 
     def _check_extrusion_issues(self, eventtime):
         if not self._is_printing or self._is_calibrating:
            return
-        
+
         # Sensor has become unhealthy, we run the runout code
         if not self._is_sensor_healthy():
             if not self._unhealthy_condition:
-                self._respond_error("Sensor %s has become unhealthy (%s), runout triggered..." % 
+                self._respond_error("Sensor %s has become unhealthy (%s), runout triggered..." %
                                     (self.name, self._sensor_unhealthy_reason(), ))
                 self._runout_event_handler(eventtime)
                 self._unhealthy_condition = True
@@ -485,10 +475,14 @@ class HighResolutionFilamentSensor:
             self.gcode.respond_info("Sensor %s has become healthy again")
             self._unhealthy_condition = False
 
-        if not self._runout_condition and self._is_runout_condition():
-            self._runout_event_handler(eventtime)
-            self._runout_condition = True
-        
+        if self._is_runout_condition():
+            if not self._runout_condition:
+                self._runout_event_handler(eventtime)
+                self._runout_condition = True
+        elif self._runout_condition:
+            # runout restored
+            self._runout_condition = False
+
     def _sensor_update_event(self, eventtime):
         self._update_state_from_sensor()
 
@@ -551,7 +545,7 @@ class HighResolutionFilamentSensor:
             data['initial_extruder_pos'] = self._get_extruder_pos()
 
             # extrude some filament
-            gcmd.respond_info("Extruding %.2fmm (at speed=%.2fmm/s, flow=%.2fmm³/s)... %d/%d" % 
+            gcmd.respond_info("Extruding %.2fmm (at speed=%.2fmm/s, flow=%.2fmm³/s)... %d/%d" %
                               (distance, speed / 60., self._speed_to_volumetric_flow(speed / 60.), index + 1, num_runs))
             cmd = self._build_extrude_cmd(distance, speed)
             self.gcode.run_script_from_command(cmd)
@@ -569,7 +563,7 @@ class HighResolutionFilamentSensor:
             move_times = [evt.eventtime for evt in move_history]
             started, ended = min(move_times), max(move_times)
             data['actual_duration'] = ended - started
-        
+
         self._is_calibrating = False
         return runs
 
@@ -599,7 +593,7 @@ class HighResolutionFilamentSensor:
         speeds = []
         deviations = []
         volumetric_flows = []
-        
+
         stats = []
         for index in range(len(runs)):
             data = runs[index]
@@ -618,8 +612,8 @@ class HighResolutionFilamentSensor:
 
             vflow = self._speed_to_volumetric_flow(move_speed)
             volumetric_flows.append(vflow)
-            
-            stats.append("Run %d/%d - requested=%.2fmm (at speed=%.2fmm/s, flow=%.2fmm³/s), measured=%.2fmm in %.2f seconds (at speed=%.2fmm/, flow=%.2fmm³/s) = %.2f%% extruded" % 
+
+            stats.append("Run %d/%d - requested=%.2fmm (at speed=%.2fmm/s, flow=%.2fmm³/s), measured=%.2fmm in %.2f seconds (at speed=%.2fmm/, flow=%.2fmm³/s) = %.2f%% extruded" %
                          (index + 1, len(runs), expected_distance, data['expected_speed'], self._speed_to_volumetric_flow(data['expected_speed']),
                           actual_distance, move_duration, move_speed, vflow, percent_extruded))
         gcmd.respond_info("\n".join(stats))
@@ -681,7 +675,7 @@ class HighResolutionFilamentSensor:
         suggested_max_flow = None
 
         cutoff = gcmd.get_float("MIN_EXTRUSION_RATE", 98.)
-        
+
         stats = []
         for index in range(len(runs)):
             data = runs[index]
@@ -699,7 +693,7 @@ class HighResolutionFilamentSensor:
             if percent_flow >= cutoff:
                 suggested_max_flow = self._speed_to_volumetric_flow(expected_speed)
 
-            stats.append("Run %d/%d - requested=%.2fmm (at speed=%.2fmm/s, flow=%.2fmm³/s), measured=%.2fmm in %.2f seconds (at speed=%.2fmm/, flow=%.2fmm³/s) = %.2f%% vol. flow" % 
+            stats.append("Run %d/%d - requested=%.2fmm (at speed=%.2fmm/s, flow=%.2fmm³/s), measured=%.2fmm in %.2f seconds (at speed=%.2fmm/, flow=%.2fmm³/s) = %.2f%% vol. flow" %
                          (index + 1, len(runs), expected_distance, expected_speed, expected_flow,
                           actual_distance, move_duration, move_speed, move_flow, percent_flow))
         gcmd.respond_info("\n".join(stats))
