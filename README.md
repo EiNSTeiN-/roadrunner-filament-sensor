@@ -31,7 +31,7 @@ See the [bill of material](manual/BOM.md) and the [assembly manual](manual/ASSEM
 Clone the repository and create a symlink to the sensor code:
 
 ```
-git clone https://github.com/EiNSTeiN-/roadrunner-filament-sensor.git
+git clone --depth 1 --single-branch https://github.com/EiNSTeiN-/roadrunner-filament-sensor.git
 ln -s ~/roadrunner-filament-sensor/klippy/extras/high_resolution_filament_sensor.py ~/klipper/klippy/extras/high_resolution_filament_sensor.py
 ```
 
