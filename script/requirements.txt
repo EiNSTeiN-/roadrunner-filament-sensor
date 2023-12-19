@@ -1,0 +1,5 @@
+websockets
+asyncio
+argparse
+aiohttp
+mergedeep

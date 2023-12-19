@@ -1,0 +1,12 @@
+header {
+    height: 100px;
+}
+
+body {
+    grid-template-columns: 1fr 90% 1fr;
+}
+
+x-charts {
+    grid-template-columns: 1fr 1fr;
+    display: grid;
+}
