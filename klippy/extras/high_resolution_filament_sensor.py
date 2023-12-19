@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import struct
 import logging
+import typing
 from . import bus, filament_switch_sensor, tmc_uart
 
 DEFAULT_I2C_TARGET_ADDR = 0x40
@@ -15,19 +16,20 @@ HISTORY_SECONDS = 1. # keep past events to calculate stats
 HISTORY_NUM_EVENTS = int((HISTORY_SECONDS / CHECK_RUNOUT_TIMEOUT) + 1)
 
 class MagnetState:
+    """" State of the rotary magnet encoder inside the sensor. """
     NOT_DETECTED = 1
     TOO_WEAK = 2
     TOO_STRONG = 3
     DETECTED = 4
 
-    VALUES = {
+    VALUES : dict[int, str] = {
         NOT_DETECTED: "not detected",
         TOO_WEAK: "too weak",
         TOO_STRONG: "too strong",
         DETECTED: "detected",
     }
 
-    def __init__(self, value):
+    def __init__(self, value : int):
         self.value = value
 
     def __str__(self):
@@ -37,21 +39,12 @@ class MagnetState:
         return "%s(value=%s)" % (self.__class__.__name__, repr(self.value))
 
 class SensorRegister:
+    """ Enum of registers that can be read from the sensor. """
     ALL = 0x10
-    # HEALTH = 0x20
     MAGNET_STATE = 0x21
     FILAMENT_PRESENCE = 0x22
     FULL_TURNS = 0x23
     ANGLE = 0x24
-
-    SIZES = {
-        ALL: 10,
-        # HEALTH: 1,
-        MAGNET_STATE: 1,
-        FILAMENT_PRESENCE: 1,
-        FULL_TURNS: 4,
-        ANGLE: 4,
-    }
 
 class RunoutHelper(filament_switch_sensor.RunoutHelper):
     def cmd_QUERY_FILAMENT_SENSOR(self, gcmd):
@@ -61,19 +54,28 @@ class RunoutHelper(filament_switch_sensor.RunoutHelper):
         gcmd.respond_info(msg)
 
 class SensorEvent:
-    def __init__(self, eventtime, angle_change, distance, epos):
+    """ A point-in-time reading from the sensor, which holds calculated
+    values as well as additional printer state. """
+
+    def __init__(self, eventtime : float, distance : float, epos : float):
+        # eventtime at which this sensor reading was taken
         self.eventtime = eventtime
-        self.angle_change = angle_change
+
+        # distance since previous reading from the sensor
         self.distance = distance
+
+        # estimated extruder position at this eventtime
         self.epos = epos
 
     def __repr__(self):
-        return "SensorEvent(eventtime=%s, angle_change=%s, distance=%s, epos=%s)" % (
-            self.eventtime, self.angle_change, self.distance, self.epos)
+        return "%s(eventtime=%s, distance=%s, epos=%s)" % (
+            self.__class__.__name__, self.eventtime, self.distance, self.epos)
 
 class SensorUART(tmc_uart.MCU_TMC_uart_bitbang):
-    def _remove_serial_bits(self, data):
-        # Remove serial start and stop bits to a message in a bytearray
+    """ Class for reading from the sensor via Klipper's native TMC uart driver. """
+
+    def _remove_serial_bits(self, data : str) -> bytearray:
+        """ Remove serial start and stop bits to a message in a bytearray. """
         mval = pos = 0
         for d in bytearray(data):
             mval |= d << pos
@@ -86,14 +88,13 @@ class SensorUART(tmc_uart.MCU_TMC_uart_bitbang):
            res.append((mval >> shift) & 0xff)
         return res
 
-    def _decode_read(self, reg, data):
-        # Extract a uart read response message
+    def _decode_read(self, reg : int, data : str) -> typing.Optional[bytearray]:
+        """ Extract a uart read response message and returns the decoded message.
+        Returns None when message cannot be verified. """
         decoded = self._remove_serial_bits(data)
         if len(decoded) < 5:
-            # logging.warning("Received too few bytes (%d bytes), need at least 5" % (len(decoded), ))
             return None
         if decoded[-1] != self._calc_crc8(decoded[:-1]):
-            # logging.warning("Received wrong CRC: %s" % (decoded.hex(), ))
             return None
         if decoded[0] != 0x05 and decoded[1] != 0xff:
             logging.warning("Received wrong message prefix: %s" % (decoded.hex(), ))
@@ -103,27 +104,43 @@ class SensorUART(tmc_uart.MCU_TMC_uart_bitbang):
             return None
         return decoded[3:-1]
 
-    def reg_read(self, _instance_id, addr, reg, reg_length=4):
+    def reg_read(self, _instance_id, addr : int, reg : int, reg_length : int = 4) -> typing.Optional[bytearray]:
+        """ Read a single register and returns a bytearray. """
         msg = self._encode_read(0xf5, addr, reg)
         read_length = (((4 + reg_length) * 10) + 7) // 8
         params = self.tmcuart_send_cmd.send([self.oid, msg, read_length])
         return self._decode_read(reg, params['read'])
 
 class SensorRotationHelper:
-    def __init__(self, bits, ignore_bits):
+    """ Helper class used to convert raw point-in-time readings from the sensor
+    into an angular change since the previous reading. """
+
+    def __init__(self, bits : int, ignore_bits : int):
+        # Maximum and minimum values that can be obtained from the sensor
         self.angle_max_value = (1 << bits)
         self.angle_min_value = (1 << ignore_bits)
+
+        # Value used to mask lower bits of the raw angle value read from the printer.
         self.mask = (1 << ignore_bits) - 1
+
+        # Number of full turns
         self._turns = 0
-        self._angle = 0 # between zero and angle_max_value
+
+        # Raw angle value, between zero and angle_max_value
+        self._angle = 0
+
+        # The cumulative angle value including all full turns
         self._absolute_angular_position = 0
+
+        # Angle change since the value was last reset
         self._angle_change = 0
 
     def angular_resolution(self):
+        """ Returns the resolution given the number of bits the sensor returns. """
         return (self.angle_min_value / float(self.angle_max_value) * 360.)
 
     def absolute_angular_position(self):
-        """ The cumulative number of degrees turned since the printer was booted up. """
+        """ Returns the cumulative number of degrees turned since the sensor was booted up. """
         return ((self._absolute_angular_position & ~self.mask) / float(self.angle_max_value) * 360.)
 
     def angle_change(self):
@@ -131,6 +148,7 @@ class SensorRotationHelper:
         return ((self._angle_change & ~self.mask) / float(self.angle_max_value) * 360.)
 
     def clear_angle_change(self):
+        """ Sets the current angle change to 0. """
         self._angle_change = 0
 
     def update_raw(self, turns, angle):
@@ -147,7 +165,70 @@ class SensorRotationHelper:
         # keep track of cumulative change since value was last reset
         self._angle_change += angle_change
 
+class CommandedMove:
+    """ Represents a movement that was commanded to the printer around a given eventtime.
+    Also holds the sensor position and the estimated extruder position around this eventtime.
+
+    When the printer is ordered to move its extruder motor by a certain amount, we know
+    the commanded (final) position ahead of time before the motor actually starts moving.
+    As we read data from the sensor, the measured distance between each sensor reading is
+    accumulated until the move is completed.
+    """
+
+    def __init__(self, eventtime, pos, last_epos, epos):
+        # eventtime when this move was started
+        self.eventtime : float = eventtime
+
+        # Sensor position when the move was started
+        self.pos : float = pos
+
+        # Last known toolhead position before the move was started.
+        # This can be a reading up to `CHECK_RUNOUT_TIME` seconds in the past.
+        self.last_epos : float = last_epos
+
+        # The commanded position, i.e. the final position once this
+        # move is done, possibly in the future.
+        self.epos : float = epos
+
+        # Expected distance travelled once this move is done.
+        self.distance : float = epos - last_epos
+
+        # False while the move is happening, True once the printer is stopped or another move starts.
+        self.ended : bool = False
+
+        # Running total of 'distance' for all `SensorEvent`, while the move is happening
+        self.measured_distance : float = 0.0
+
+        # All `SensorEvent` objects that happened during this move
+        self.sensor_events : list[SensorEvent] = []
+
+    def latest_movement_eventtime(self):
+        """ The most most recent (chronologically) `eventtime` at which the sensor
+        had a non-zero `distance` reading. """
+        for event in self.sensor_events:
+            if event.distance > 0:
+                return event.eventtime
+        return None
+
+class TriggerOnChange:
+    """ Calls a function when the value is changed from False to True, only once. """
+
+    def __init__(self, value : typing.Optional[bool], fn):
+        self._value : bool = value
+        self._fn = fn
+
+    def set(self, value : bool):
+        if value is not self._value:
+            self._fn(self._value, value)
+        self._value = value
+
+    def __bool__(self):
+        return self._value
+    __nonzero__=__bool__
+
 class HighResolutionFilamentSensor:
+    """ A filament sensor from which we can get extremely accurate position readings. """
+
     def __init__(self, config):
         self.name = config.get_name().split()[-1]
         self.printer = config.get_printer()
@@ -169,20 +250,24 @@ class HighResolutionFilamentSensor:
         self.rotation_distance = config.getfloat('rotation_distance', minval=0)
         self.underextrusion_max_rate = config.getfloat('underextrusion_max_rate', minval=0.0, maxval=1.0)
         self.underextrusion_period = config.getfloat('underextrusion_period', minval=0.0)
-        self.reset_position()
+        self.move_evaluation_distance = config.getfloat('move_evaluation_distance', 50, minval=0.0)
 
+        # Printer state
         self._history = []
+        self._commanded_moves = []
+        self.position = 0.0
         self._is_calibrating = False
         self._is_printing = False
-        self._unhealthy_condition = False
-        self._runout_condition = False
+        self._unhealthy = TriggerOnChange(False, self._unhealthy_changed)
+        self._runout = TriggerOnChange(False, self._runout_changed)
         self._underextrusion_start_time = None
-        self._underextrusion_detected = False
+        self._underextruding = TriggerOnChange(False, self._underextruding_changed)
+        self._last_epos = 0.0
 
-        # self._sensor_health = -1
+        # Internal sensor state
         self._magnet_state = MagnetState(0xff)
-        self._sensor_connected = False
-        self._filament_present = False
+        self._sensor_connected = TriggerOnChange(None, self._sensor_connected_changed)
+        self._filament_present = TriggerOnChange(None, self._filament_present_changed)
         self._sensor_rotation_helper = SensorRotationHelper(12, 3) # 12 bits of precision, ignore lower 3 bits
 
         self._sensor_update_timer = self.reactor.register_timer(
@@ -195,6 +280,8 @@ class HighResolutionFilamentSensor:
                 self._handle_not_printing)
         self.printer.register_event_handler('idle_timeout:idle',
                 self._handle_not_printing)
+        self.printer.register_event_handler('toolhead:set_position',
+                self._toolhead_set_position)
 
         self.gcode.register_mux_command(
             "CALIBRATE_FILAMENT_SENSOR_ROTATION_DISTANCE", "SENSOR", self.name,
@@ -206,7 +293,7 @@ class HighResolutionFilamentSensor:
             self.cmd_CALIBRATE_MAX_FLOW,
             desc=self.cmd_CALIBRATE_MAX_FLOW_help)
 
-    def _lookup_uart_bitbang(self, config):
+    def _lookup_uart_bitbang(self, config) -> typing.Optional[SensorUART]:
         if not (rx_pin := config.get('uart_rx_pin', None)):
             return
         ppins = config.get_printer().lookup_object("pins")
@@ -216,21 +303,19 @@ class HighResolutionFilamentSensor:
         if rx_pin_params['chip'] is not tx_pin_params['chip']:
             raise ppins.error("%s uart rx and tx pins must be on the same mcu")
 
-        uart = SensorUART(rx_pin_params, tx_pin_params, None)
-        return uart
+        return SensorUART(rx_pin_params, tx_pin_params, None)
 
-    def reset_position(self):
-        self.position = 0.0
+    def _toolhead_set_position(self):
+        """ Callback when kinematic position is set for the toolhead.
+        This changes the current toolhead position without moving. """
+        toolhead = self.printer.lookup_object('toolhead')
+        if toolhead.get_extruder() is self.extruder:
+            # toolhead position was updated without a move, keep track of this
+            self._last_epos = toolhead.get_position()[3]
 
-    def get_history_period(self):
-        """ Length of time elapsed between the first and last events in the history buffer. """
-        if len(self._history) > 0:
-            return self._history[0].eventtime - self._history[-1].eventtime
-        else:
-            return None
-
-    def get_motion_direction(self, distance):
-        if distance == 0.0:
+    def get_motion_direction(self, distance : float) -> str:
+        """ Returns which way the extruder is moving given a positive or negative distance value. """
+        if not distance:
             return "idle"
         elif distance > 0:
             return "extruding"
@@ -244,11 +329,16 @@ class HighResolutionFilamentSensor:
         0.0 to 1.0, 0 means the measured rate matches the expected
         rate and 1 meaning no extrusion at all when some was expected. """
 
-        if len(self._history) < 2:
+        if len(self._commanded_moves) == 0:
+            return 0.0
+        move = self._commanded_moves[0]
+        events = move.sensor_events
+
+        if len(events) < 1:
             return 0.0
 
-        expected_distance = self._history[0].epos - self._history[-1].epos
-        actual_distance = sum([evt.distance for evt in self._history])
+        expected_distance = events[0].epos - move.last_epos # self._get_extruder_pos(move.eventtime)
+        actual_distance = move.measured_distance
 
         if expected_distance < 0.1:
             # TODO: get a measure of the sensor's expected resolution
@@ -257,35 +347,42 @@ class HighResolutionFilamentSensor:
             return max(0.0, 1. - (actual_distance / expected_distance))
 
     def get_status(self, eventtime):
-        distance = sum([evt.distance for evt in self._history])
-        period = self.get_history_period()
+        expected_distance = 0.0
+        move = None
+        distance = 0.0
+        period = None
+        speed = 0.0
 
-        if len(self._history) > 1:
-            expected_distance = self._history[0].epos - self._history[-1].epos
-        else:
-            expected_distance = None
+        if len(self._commanded_moves) > 0:
+            move = self._commanded_moves[0]
+            events = move.sensor_events
+            if len(events) > 0:
+                expected_distance = events[0].epos - move.last_epos #self._get_extruder_pos(move.eventtime)
+                if latest_eventtime := move.latest_movement_eventtime():
+                    period = latest_eventtime - move.eventtime
+            distance = move.measured_distance
 
-        if period is not None and period > 0:
-            speed = distance / period
-        else:
-            speed = None
+            if not move.ended and distance is not None and period:
+                speed = distance / period
 
         return {
             "enabled": bool(self.runout_helper.sensor_enabled),
-            "sensor_connected": self._sensor_connected,
+            "sensor_connected": bool(self._sensor_connected),
             "magnet_state": str(self._magnet_state),
             "filament_detected": bool(self._filament_present),
             "motion": {
                 "detected": bool(distance != 0),
                 "direction": self.get_motion_direction(distance),
+                "commanded_distance": move.distance if move and not move.ended else 0.0,
                 "expected_distance": expected_distance,
                 "measured_distance": distance,
                 "measured_speed": speed,
                 "measured_volumetric_flow": self._speed_to_volumetric_flow(speed) if speed else 0.0,
             },
             "underextrusion_rate": self._measured_underextrusion_rate() if self._is_printing else 0.0,
-            "underextrusion_detected": self._underextrusion_detected,
-            "runout": self._runout_condition,
+            "underextrusion_detected": bool(self._underextruding),
+            "runout": bool(self._runout),
+            "extruder_position": self._history[0].epos,
             "position": self.position,
         }
 
@@ -314,6 +411,8 @@ class HighResolutionFilamentSensor:
         return bytearray(params['response'])
 
     def _get_extruder_pos(self, eventtime=None):
+        """ Find the estimated extruder position at the given eventtime. """
+
         if self.estimated_print_time is None:
             return None
 
@@ -323,8 +422,65 @@ class HighResolutionFilamentSensor:
         print_time = self.estimated_print_time(eventtime)
         return self.extruder.find_past_position(print_time)
 
+    def _inspect_move_queue(self, eventtime):
+        """ Check if the commanded position of the extruder has changed and
+        keep track of commanded moves.
+
+        Moves smaller than `min_evaluation_distance` are combined to get an accurate
+        comparative distance measurement.
+        """
+
+        toolhead = self.printer.lookup_object('toolhead')
+        if toolhead.get_extruder() is not self.extruder:
+            return
+
+        epos = toolhead.get_position()[3]
+        distance = epos - self._last_epos
+        if distance > 0:
+            if len(self._commanded_moves) > 0:
+                move = self._commanded_moves[0]
+                if not move.ended and move.distance < self.move_evaluation_distance:
+                    # current move is small, extend it instead of starting a new move
+                    move.distance += distance
+                    move.epos = epos
+                    return
+                else:
+                    move.ended = True
+
+            move = CommandedMove(eventtime, self.position, self._last_epos, epos)
+            self._commanded_moves.insert(0, move)
+            self._last_epos = move.epos
+
+            # logging.info(f"New move in queue: at={eventtime}, sensor pos={move.pos}, extruder pos={move.last_epos} -> {move.epos}, distance={move.distance}")
+
+        while len(self._commanded_moves) > 10:
+            self._commanded_moves.pop()
+
+    def _sensor_connected_changed(self, old_value, new_value):
+        logging.info(f"{self.name}: 'sensor_connected' changed from {old_value} to {new_value}")
+
+        if old_value is None:
+            return
+        if new_value:
+            self._respond_info("Reconnected")
+        else:
+            self._respond_error("No longer connected or data cannot be read")
+
+    def _filament_present_changed(self, old_value, new_value):
+        logging.info(f"{self.name}: 'filament_present' changed from {old_value} to {new_value}")
+
+        if old_value is None:
+            return
+        if new_value:
+            self._respond_info("Filament present")
+        else:
+            self._respond_error("Filament not present")
+
     def _update_state_from_sensor(self):
+        """ Read data from sensor and sets our internal state to match. """
+
         eventtime = self.reactor.monotonic()
+        self._inspect_move_queue(eventtime)
 
         if self.uart:
             magnet_state = self.uart_read_reg1(SensorRegister.MAGNET_STATE)
@@ -332,35 +488,34 @@ class HighResolutionFilamentSensor:
             full_turns = self.uart_read_reg4(SensorRegister.FULL_TURNS)
             angle = self.uart_read_reg4(SensorRegister.ANGLE)
 
-            self._sensor_connected = not (magnet_state is None or
+            self._sensor_connected.set(not (magnet_state is None or
                                           filament_presence is None or
                                           full_turns is None or
-                                          angle is None)
+                                          angle is None))
 
             if not self._sensor_connected:
                 return
         else:
             data = self.i2c_read_reg(SensorRegister.ALL, 10)
             if len(data) != 10:
-                self._sensor_connected = False
+                self._sensor_connected.set(False)
                 logging.warning("Update from sensor failed, expected 10 bytes but got %d: '%s'" % (len(data), data.hex(), ))
                 return
 
             magnet_state, filament_presence, full_turns, angle = struct.unpack('<BBll', data)
 
-            self._sensor_connected = magnet_state != 0xff
+            self._sensor_connected.set(magnet_state != 0xff)
             if not self._sensor_connected:
                 return
 
         self._magnet_state = MagnetState(magnet_state)
-        self._filament_present = filament_presence == 1
+        self._filament_present.set(filament_presence == 1)
 
         self._sensor_rotation_helper.update_raw(full_turns, angle)
         angle_change = self._sensor_rotation_helper.angle_change()
 
         if angle_change != 0.0:
             self._sensor_rotation_helper.clear_angle_change()
-            # logging.info("update from sensor: turns=%d angle=%d change=%d" % (full_turns, angle, angle_change))
 
         if self.invert_direction:
             angle_change = angle_change * -1
@@ -368,14 +523,22 @@ class HighResolutionFilamentSensor:
         distance = self.rotation_distance * angle_change / 360.
         self.position += distance
 
-        event = SensorEvent(eventtime, angle_change, distance, self._get_extruder_pos(eventtime))
+        event = SensorEvent(eventtime, distance, self._get_extruder_pos(eventtime))
         self._history.insert(0, event)
+
+        if len(self._commanded_moves) > 0:
+            move = self._commanded_moves[0]
+            if not move.ended:
+                move.measured_distance += distance
+                move.sensor_events.insert(0, event)
 
         if self._is_calibrating is False:
             while len(self._history) > HISTORY_NUM_EVENTS:
                 self._history.pop()
 
     def _handle_ready(self):
+        """ Callback when printer becomes ready. """
+
         logging.info("[%s] ready" % (self.__class__.__name__, ))
 
         self.extruder = self.printer.lookup_object(self.extruder_name)
@@ -383,24 +546,38 @@ class HighResolutionFilamentSensor:
         self.reactor.update_timer(self._sensor_update_timer, self.reactor.NOW)
 
     def _handle_printing(self, print_time):
+        """ Callback when printing starts. """
+
         logging.info("[%s] printing" % (self.__class__.__name__, ))
-        self._runout_condition = False
+        self._runout.set(False)
         self._underextrusion_start_time = None
-        self._underextrusion_detected = False
+        self._underextruding.set(False)
         self._is_printing = True
 
     def _handle_not_printing(self, print_time):
+        """ Callback when printing is finished. """
+
         logging.info("[%s] not printing" % (self.__class__.__name__, ))
         self._is_printing = False
 
+        for move in self._commanded_moves:
+            move.ended = True
+        return
+
     def _respond_error(self, msg):
+        """ Print and error to the gcode console. """
+        msg = f"{self.name}: {msg}"
         logging.warning(msg)
         lines = msg.strip().split('\n')
         if len(lines) > 1:
             self.gcode.respond_info("\n".join(lines), log=False)
         self.gcode.respond_raw('!! %s' % (lines[0].strip(),))
 
+    def _respond_info(self, msg, log=False):
+        self.gcode.respond_info(f"{self.name}: {msg}", log)
+
     def _exec_gcode(self, prefix, template):
+        """ Execute the given gcode with error handling. """
         try:
             self.gcode.run_script(prefix + template.render() + "\nM400")
         except Exception:
@@ -408,10 +585,11 @@ class HighResolutionFilamentSensor:
         self.runout_helper.min_event_systime = self.reactor.monotonic() + self.runout_helper.event_delay
 
     def _runout_event_handler(self, eventtime):
-        # Pausing from inside an event requires that the pause portion
-        # of pause_resume execute immediately.
+        """ Call the runout code and optionally pause the print. """
         pause_prefix = ""
         if self.runout_helper.runout_pause:
+            # Pausing from inside an event requires that the pause portion
+            # of pause_resume execute immediately.
             pause_resume = self.printer.lookup_object('pause_resume')
             pause_resume.send_pause_command()
             pause_prefix = "PAUSE\n"
@@ -419,75 +597,95 @@ class HighResolutionFilamentSensor:
         self._exec_gcode(pause_prefix, self.runout_helper.runout_gcode)
 
     def _is_sensor_healthy(self):
-        """ The sensor can stop responding if micropython crashes,
-        or the magnet can be too far from the hall rotary encoder for a reading."""
+        """ The sensor is 'unhealthy' when it stops responding, or when the magnet
+        is too far from the magnetic rotary encoder."""
         return self._sensor_connected and \
             self._magnet_state.value == MagnetState.DETECTED
 
-    def _sensor_unhealthy_reason(self):
+    def _sensor_unhealthy_reason(self) -> str:
+        """ Returns a reason for the sensor being unhealthy for displaying in error messages. """
         if not self._sensor_connected:
             return "no data from sensor"
-        # if not self._sensor_health != 0:
-        #     return "sensor reports an internal error (cannot read from magnetic encoder?)"
         if self._magnet_state.value != MagnetState.DETECTED:
             return "magnet %s" % (str(self._magnet_state), )
         return "unknown reason"
 
     def _is_runout_condition(self):
+        """ Checks whether there is a runout condition, either immediately when
+        the filament is not detected, or after the configured period of time when
+        underextruding. """
+
         if not self._filament_present:
-            self._respond_error("Detected filament not present")
             return True
 
         rate = self._measured_underextrusion_rate()
         if rate > self.underextrusion_max_rate:
             if self._underextrusion_start_time is None:
                 self._underextrusion_start_time = self.reactor.monotonic()
-                self._respond_error("Detected %.2f%% underextrusion starting at %.2f" %
-                                    (rate * 100, self._underextrusion_start_time))
+                # self._respond_error("Detected %.2f%% underextrusion starting at %.2f" %
+                #                     (rate * 100, self._underextrusion_start_time))
                 return False
             elif self._underextrusion_start_time + self.underextrusion_period < self.reactor.monotonic():
-                if not self._underextrusion_detected:
-                    self._respond_error("Detected sustained underextrusion for over %.2fs" %
-                                        (self.underextrusion_period, ))
-                    self._underextrusion_detected = True
+                self._underextruding.set(True)
                 return True
         elif self._underextrusion_start_time is not None:
-            self.gcode.respond_info("Underextrusion cleared after %.2fs" %
-                                    (self.reactor.monotonic() - self._underextrusion_start_time), True)
+            self._underextruding.set(False)
             self._underextrusion_start_time = None
-            self._underextrusion_detected = False
 
         return False
 
-    def _check_extrusion_issues(self, eventtime):
+    def _unhealthy_changed(self, old_value, new_value):
+        logging.info(f"{self.name}: 'unhealthy' changed from {old_value} to {new_value}")
+        if new_value is False:
+            return
+
+        if new_value is True:
+            self._respond_error("Unhealthy (%s)" %
+                                (self._sensor_unhealthy_reason(), ))
+        else:
+            self._respond_info("Became healthy again")
+
+    def _runout_changed(self, old_value, new_value):
+        logging.info(f"{self.name}: 'runout' changed from {old_value} to {new_value}")
+
+    def _underextruding_changed(self, old_value, new_value):
+        logging.info(f"{self.name}: 'underextruding' changed from {old_value} to {new_value}")
+
+        if new_value:
+            self._respond_error("Detected underextrusion for over %.2fs" %
+                                (self.underextrusion_period, ))
+        else:
+            self._respond_info("Underextrusion cleared after %.2fs" %
+                                    (self.reactor.monotonic() - self._underextrusion_start_time))
+
+    def _check_print_issues(self, eventtime):
+        """ Call runout code when print issues are detected. """
+
         if not self._is_printing or self._is_calibrating:
            return
 
-        # Sensor has become unhealthy, we run the runout code
         if not self._is_sensor_healthy():
-            if not self._unhealthy_condition:
-                self._respond_error("Sensor %s has become unhealthy (%s), runout triggered..." %
-                                    (self.name, self._sensor_unhealthy_reason(), ))
+            if not self._unhealthy:
+                self._unhealthy.set(True)
                 self._runout_event_handler(eventtime)
-                self._unhealthy_condition = True
             return
-        elif self._unhealthy_condition:
-            self.gcode.respond_info("Sensor %s has become healthy again")
-            self._unhealthy_condition = False
+        else:
+            self._unhealthy.set(False)
 
         if self._is_runout_condition():
-            if not self._runout_condition:
+            if not self._runout:
+                self._runout.set(True)
                 self._runout_event_handler(eventtime)
-                self._runout_condition = True
-        elif self._runout_condition:
+        else:
             # runout restored
-            self._runout_condition = False
+            self._runout.set(False)
 
     def _sensor_update_event(self, eventtime):
+        """ Periodic timer to fetch sensor data and update internal state. """
         self._update_state_from_sensor()
 
         if eventtime >= self.runout_helper.min_event_systime and self.runout_helper.sensor_enabled:
-            self._check_extrusion_issues(eventtime)
+            self._check_print_issues(eventtime)
 
         return eventtime + CHECK_RUNOUT_TIMEOUT
 
@@ -496,14 +694,15 @@ class HighResolutionFilamentSensor:
 
         r = 0
         while r < requested_distance:
-            if self.extruder.max_e_dist < requested_distance:
+            remaining_distance = (requested_distance - r)
+            if self.extruder.max_e_dist < remaining_distance:
                 distance = self.extruder.max_e_dist
             else:
-                distance = requested_distance
+                distance = remaining_distance
             cmd += "G1 E%.2f F%d\n" % (distance, speed)
             r += distance
 
-        cmd += "M400" # wait for move to finish
+        cmd += "M400\n" # wait for move to finish
         return cmd
 
     def _activate_extruder(self, gcmd):
@@ -539,10 +738,13 @@ class HighResolutionFilamentSensor:
             data = {}
             runs.append(data)
 
-            self._history = []
+            # self._history = []
             data['expected_speed'] = speed / 60.
             data['initial_sensor_pos'] = self.position
             data['initial_extruder_pos'] = self._get_extruder_pos()
+            start_eventtime = self.reactor.monotonic()
+
+            self.reactor.pause(self.reactor.monotonic() + .1)
 
             # extrude some filament
             gcmd.respond_info("Extruding %.2fmm (at speed=%.2fmm/s, flow=%.2fmm³/s)... %d/%d" %
@@ -551,18 +753,20 @@ class HighResolutionFilamentSensor:
             self.gcode.run_script_from_command(cmd)
 
             # Give time for everything to settle
-            self.reactor.pause(self.reactor.monotonic() + 1.)
+            self.reactor.pause(self.reactor.monotonic() + 3.)
 
             data['final_sensor_pos'] = self.position
             data['final_extruder_pos'] = self._get_extruder_pos()
             data['expected_distance'] = data['final_extruder_pos'] - data['initial_extruder_pos']
             data['actual_distance'] = data['final_sensor_pos'] - data['initial_sensor_pos']
-            data['history'] = self._history[:]
+            data['history'] = [evt for evt in self._history if evt.eventtime >= start_eventtime]
 
-            move_history = [evt for evt in self._history if evt.distance != 0.]
+            move_history = [evt for evt in data['history'] if evt.distance != 0.]
             move_times = [evt.eventtime for evt in move_history]
             started, ended = min(move_times), max(move_times)
             data['actual_duration'] = ended - started
+
+            self.reactor.pause(self.reactor.monotonic() + .1)
 
         self._is_calibrating = False
         return runs
