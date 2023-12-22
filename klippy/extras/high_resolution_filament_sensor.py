@@ -12,8 +12,6 @@ DEFAULT_I2C_TARGET_ADDR = 0x40
 DEFAULT_I2C_SPEED = 100000
 
 CHECK_RUNOUT_TIMEOUT = .100 # read sensor value at this interval
-HISTORY_SECONDS = 1. # keep past events to calculate stats
-HISTORY_NUM_EVENTS = int((HISTORY_SECONDS / CHECK_RUNOUT_TIMEOUT) + 1)
 
 class MagnetState:
     """" State of the rotary magnet encoder inside the sensor. """
@@ -45,13 +43,6 @@ class SensorRegister:
     FILAMENT_PRESENCE = 0x22
     FULL_TURNS = 0x23
     ANGLE = 0x24
-
-class RunoutHelper(filament_switch_sensor.RunoutHelper):
-    def cmd_QUERY_FILAMENT_SENSOR(self, gcmd):
-        msg = "Filament Sensor %s: filament %s, motion %s\n%s" % (self.name,
-            "detected" if self.filament_present else "not detected",
-            "", self.get_status(None))
-        gcmd.respond_info(msg)
 
 class SensorEvent:
     """ A point-in-time reading from the sensor, which holds calculated
@@ -115,9 +106,12 @@ class SensorRotationHelper:
     """ Helper class used to convert raw point-in-time readings from the sensor
     into an angular change since the previous reading. """
 
-    def __init__(self, bits : int, ignore_bits : int):
+    def __init__(self, resolution : int, ignore_bits : int):
+        self.resolution = resolution
+        self.ignore_bits = ignore_bits
+
         # Maximum and minimum values that can be obtained from the sensor
-        self.angle_max_value = (1 << bits)
+        self.angle_max_value = (1 << resolution) - 1
         self.angle_min_value = (1 << ignore_bits)
 
         # Value used to mask lower bits of the raw angle value read from the printer.
@@ -135,6 +129,7 @@ class SensorRotationHelper:
         # Angle change since the value was last reset
         self._angle_change = 0
 
+    @property
     def angular_resolution(self):
         """ Returns the resolution given the number of bits the sensor returns. """
         return (self.angle_min_value / float(self.angle_max_value) * 360.)
@@ -164,6 +159,22 @@ class SensorRotationHelper:
 
         # keep track of cumulative change since value was last reset
         self._angle_change += angle_change
+
+class MotionDirection:
+    """" Wrapper for the motion direction. """
+    def __init__(self, distance : float):
+        self.distance = distance
+
+    def __str__(self):
+        if not self.distance:
+            return "idle"
+        elif self.distance > 0:
+            return "extruding"
+        else:
+            return "reversing"
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}(distance={self.distance})"
 
 class CommandedMove:
     """ Represents a movement that was commanded to the printer around a given eventtime.
@@ -200,15 +211,77 @@ class CommandedMove:
         self.measured_distance : float = 0.0
 
         # All `SensorEvent` objects that happened during this move
-        self.sensor_events : list[SensorEvent] = []
+        # self.sensor_events : list[SensorEvent] = []
+        self.first_event : typing.Optional[SensorEvent] = None
+        self.last_event : typing.Optional[SensorEvent] = None
+        self.first_motion_event : typing.Optional[SensorEvent] = None
+        self.last_motion_event : typing.Optional[SensorEvent] = None
 
-    def latest_movement_eventtime(self):
-        """ The most most recent (chronologically) `eventtime` at which the sensor
-        had a non-zero `distance` reading. """
-        for event in self.sensor_events:
-            if event.distance > 0:
-                return event.eventtime
-        return None
+    def add_sensor_event(self, event):
+        self.measured_distance += event.distance
+        # self.sensor_events.insert(0, event)
+        if self.first_event is None:
+            self.first_event = event
+        if event.distance > 0:
+            if self.first_motion_event is None:
+                self.first_motion_event = event
+            self.last_motion_event = event
+        self.last_event = event
+
+    @property
+    def last_motion_eventtime(self) -> typing.Optional[float]:
+        """ The most recent `eventtime` at which the sensor had a non-zero `distance` reading. """
+        if self.last_motion_event:
+            return self.last_motion_event.eventtime
+
+    @property
+    def first_motion_eventtime(self) -> typing.Optional[float]:
+        """ The most recent `eventtime` at which the sensor had a non-zero `distance` reading. """
+        if self.first_motion_event:
+            return self.first_motion_event.eventtime
+
+    def has_stopped_moving(self, duration=0.1) -> bool:
+        if not (e := self.last_motion_eventtime):
+            return False
+        diff = self.last_event.eventtime - e
+        if e == 0.0:
+            return False
+        return e > duration
+
+    @property
+    def duration(self) -> typing.Optional[float]:
+        """ The actual duration of the move. """
+        if e := self.last_motion_eventtime:
+            return e - self.first_motion_eventtime
+
+    @property
+    def expected_distance(self) -> typing.Optional[float]:
+        """ Returns distance that the extruder is expected to have travelled
+        between the start of the move and the most recent sensor reading. """
+        if self.first_event:
+            return self.last_event.epos - self.last_epos
+
+    @property
+    def speed(self) -> typing.Optional[float]:
+        """ Returns the average speed during the move (measured distance divided by duration). """
+        if d := self.duration:
+            return self.measured_distance / d
+
+    @property
+    def extrusion_rate(self) -> float:
+        """ Returns the extrusion rate, (measured distance over the expected distance). """
+        if d := self.expected_distance:
+            return self.measured_distance / d
+        return 0.0
+
+    @property
+    def detected(self) -> bool:
+        return self.measured_distance > 0
+
+    @property
+    def direction(self) -> str:
+        """ Returns which way the extruder is moving given a positive or negative distance value. """
+        return MotionDirection(self.measured_distance)
 
 class TriggerOnChange:
     """ Calls a function when the value is changed from False to True, only once. """
@@ -226,6 +299,14 @@ class TriggerOnChange:
         return self._value
     __nonzero__=__bool__
 
+class RunoutHelper(filament_switch_sensor.RunoutHelper):
+    def __init__(self, config, sensor):
+        super().__init__(config)
+        self._sensor = sensor
+
+    def cmd_QUERY_FILAMENT_SENSOR(self, gcmd):
+        return self._sensor.cmd_QUERY_FILAMENT_SENSOR(gcmd)
+
 class HighResolutionFilamentSensor:
     """ A filament sensor from which we can get extremely accurate position readings. """
 
@@ -234,8 +315,7 @@ class HighResolutionFilamentSensor:
         self.printer = config.get_printer()
         self.gcode = self.printer.lookup_object('gcode')
         self.reactor = self.printer.get_reactor()
-        self.runout_helper = RunoutHelper(config)
-        self.runout_helper.get_status = self.get_status
+        self.runout_helper = RunoutHelper(config, self)
         self.estimated_print_time = None
 
         self.uart = self._lookup_uart_bitbang(config)
@@ -250,11 +330,10 @@ class HighResolutionFilamentSensor:
         self.rotation_distance = config.getfloat('rotation_distance', minval=0)
         self.underextrusion_max_rate = config.getfloat('underextrusion_max_rate', minval=0.0, maxval=1.0)
         self.underextrusion_period = config.getfloat('underextrusion_period', minval=0.0)
-        self.move_evaluation_distance = config.getfloat('move_evaluation_distance', 50, minval=0.0)
+        self.move_evaluation_distance = config.getfloat('move_evaluation_distance', 1, minval=0.0)
 
         # Printer state
-        self._history = []
-        self._commanded_moves = []
+        self._commanded_moves : list[CommandedMove] = []
         self.position = 0.0
         self._is_calibrating = False
         self._is_printing = False
@@ -263,12 +342,13 @@ class HighResolutionFilamentSensor:
         self._underextrusion_start_time = None
         self._underextruding = TriggerOnChange(False, self._underextruding_changed)
         self._last_epos = 0.0
+        self._status_evaluation_move = None
 
         # Internal sensor state
         self._magnet_state = MagnetState(0xff)
         self._sensor_connected = TriggerOnChange(None, self._sensor_connected_changed)
         self._filament_present = TriggerOnChange(None, self._filament_present_changed)
-        self._sensor_rotation_helper = SensorRotationHelper(12, 3) # 12 bits of precision, ignore lower 3 bits
+        self._rotation_helper = SensorRotationHelper(12, 3) # 12 bits of precision, ignore lower 3 bits
 
         self._sensor_update_timer = self.reactor.register_timer(
                 self._sensor_update_event)
@@ -293,6 +373,21 @@ class HighResolutionFilamentSensor:
             self.cmd_CALIBRATE_MAX_FLOW,
             desc=self.cmd_CALIBRATE_MAX_FLOW_help)
 
+    def cmd_QUERY_FILAMENT_SENSOR(self, gcmd):
+        sensor_connected = "connected" if self._sensor_connected else "not connected"
+        filament_present = "detected" if self._filament_present else "not detected"
+        runout_detected = "detected" if self._runout else "not detected"
+        underextruding_detected = "detected" if self._underextruding else "not detected"
+        msg = f"Filament Sensor {self.name}:\n"
+        msg += f"- sensor {sensor_connected}\n"
+        msg += f"- filament {filament_present}\n"
+        msg += f"- runout {runout_detected}\n"
+        msg += f"- underextrusion {underextruding_detected}\n"
+        msg += f"- resolution: {self._rotation_helper.resolution} bits (lower {self._rotation_helper.ignore_bits} bits are ignored)\n"
+        msg += f"- smallest detectable angular change: {self._rotation_helper.angular_resolution} degree\n"
+        msg += f"- smallest detectable movement: {self._rotation_helper.angular_resolution / 360. * self.rotation_distance} mm\n"
+        gcmd.respond_info(msg)
+
     def _lookup_uart_bitbang(self, config) -> typing.Optional[SensorUART]:
         if not (rx_pin := config.get('uart_rx_pin', None)):
             return
@@ -313,57 +408,44 @@ class HighResolutionFilamentSensor:
             # toolhead position was updated without a move, keep track of this
             self._last_epos = toolhead.get_position()[3]
 
-    def get_motion_direction(self, distance : float) -> str:
-        """ Returns which way the extruder is moving given a positive or negative distance value. """
-        if not distance:
-            return "idle"
-        elif distance > 0:
-            return "extruding"
-        else:
-            return "reversing"
-
-    def _measured_underextrusion_rate(self):
+    def _measured_underextrusion_rate(self, move):
         """ Return a measure of how much we are actually extruding
         compared to how much was expected over the events kept in
         the history buffer. The rate is returned as a value from
         0.0 to 1.0, 0 means the measured rate matches the expected
         rate and 1 meaning no extrusion at all when some was expected. """
 
-        if len(self._commanded_moves) == 0:
+        if not move:
             return 0.0
-        move = self._commanded_moves[0]
-        events = move.sensor_events
+        return min(1, max(-1, 1. - move.extrusion_rate))
 
-        if len(events) < 1:
-            return 0.0
+    def _combine_moves(self, newer : CommandedMove, older : CommandedMove):
+        move = CommandedMove(older.eventtime, older.pos, older.last_epos, newer.epos)
+        move.distance = newer.epos - older.last_epos
+        move.ended = newer.ended
+        move.measured_distance = older.measured_distance + newer.measured_distance
+        move.first_event = older.first_event or newer.first_event
+        move.first_motion_event = older.first_motion_event or newer.first_motion_event
+        move.last_motion_event = newer.last_motion_event or older.last_motion_event
+        move.last_event = newer.last_event or older.last_event
+        return move
 
-        expected_distance = events[0].epos - move.last_epos # self._get_extruder_pos(move.eventtime)
-        actual_distance = move.measured_distance
+    def _combine_moves_for_distance(self, distance):
+        move = None
 
-        if expected_distance < 0.1:
-            # TODO: get a measure of the sensor's expected resolution
-            return 0.0
-        else:
-            return max(0.0, 1. - (actual_distance / expected_distance))
+        for _move in self._commanded_moves:
+            if not move:
+                move = _move
+            else:
+                move = self._combine_moves(move, _move)
+            if move.distance >= distance:
+                break
+
+        return move
 
     def get_status(self, eventtime):
-        expected_distance = 0.0
-        move = None
-        distance = 0.0
-        period = None
-        speed = 0.0
-
-        if len(self._commanded_moves) > 0:
-            move = self._commanded_moves[0]
-            events = move.sensor_events
-            if len(events) > 0:
-                expected_distance = events[0].epos - move.last_epos #self._get_extruder_pos(move.eventtime)
-                if latest_eventtime := move.latest_movement_eventtime():
-                    period = latest_eventtime - move.eventtime
-            distance = move.measured_distance
-
-            if not move.ended and distance is not None and period:
-                speed = distance / period
+        move = self._status_evaluation_move
+        speed = move.speed if move and not move.ended else None
 
         return {
             "enabled": bool(self.runout_helper.sensor_enabled),
@@ -371,18 +453,17 @@ class HighResolutionFilamentSensor:
             "magnet_state": str(self._magnet_state),
             "filament_detected": bool(self._filament_present),
             "motion": {
-                "detected": bool(distance != 0),
-                "direction": self.get_motion_direction(distance),
+                "detected": move.detected if move else False,
+                "direction": str(move.direction) if move else "idle",
                 "commanded_distance": move.distance if move and not move.ended else 0.0,
-                "expected_distance": expected_distance,
-                "measured_distance": distance,
-                "measured_speed": speed,
+                "expected_distance": move.expected_distance if move else 0.0,
+                "measured_distance": move.measured_distance if move else 0.0,
+                "measured_speed": speed or 0.0,
                 "measured_volumetric_flow": self._speed_to_volumetric_flow(speed) if speed else 0.0,
             },
-            "underextrusion_rate": self._measured_underextrusion_rate() if self._is_printing else 0.0,
+            "underextrusion_rate": self._measured_underextrusion_rate(move) if move and self._is_printing else 0.0,
             "underextrusion_detected": bool(self._underextruding),
             "runout": bool(self._runout),
-            "extruder_position": self._history[0].epos,
             "position": self.position,
         }
 
@@ -422,13 +503,9 @@ class HighResolutionFilamentSensor:
         print_time = self.estimated_print_time(eventtime)
         return self.extruder.find_past_position(print_time)
 
-    def _inspect_move_queue(self, eventtime):
+    def _inspect_commanded_move(self, eventtime):
         """ Check if the commanded position of the extruder has changed and
-        keep track of commanded moves.
-
-        Moves smaller than `min_evaluation_distance` are combined to get an accurate
-        comparative distance measurement.
-        """
+        keep track of commanded moves. """
 
         toolhead = self.printer.lookup_object('toolhead')
         if toolhead.get_extruder() is not self.extruder:
@@ -437,23 +514,22 @@ class HighResolutionFilamentSensor:
         epos = toolhead.get_position()[3]
         distance = epos - self._last_epos
         if distance > 0:
+            previous_event = None
             if len(self._commanded_moves) > 0:
                 move = self._commanded_moves[0]
-                if not move.ended and move.distance < self.move_evaluation_distance:
-                    # current move is small, extend it instead of starting a new move
-                    move.distance += distance
-                    move.epos = epos
-                    return
-                else:
-                    move.ended = True
+                move.ended = True
+                previous_event = move.last_event
 
             move = CommandedMove(eventtime, self.position, self._last_epos, epos)
             self._commanded_moves.insert(0, move)
             self._last_epos = move.epos
 
-            # logging.info(f"New move in queue: at={eventtime}, sensor pos={move.pos}, extruder pos={move.last_epos} -> {move.epos}, distance={move.distance}")
+            # insert last event from previous move (i.e. the previous sensor reading)
+            # into the current move, to get an accurate speed without discontinuity.
+            if previous_event:
+                move.add_sensor_event(previous_event)
 
-        while len(self._commanded_moves) > 10:
+        while len(self._commanded_moves) > 100:
             self._commanded_moves.pop()
 
     def _sensor_connected_changed(self, old_value, new_value):
@@ -480,7 +556,7 @@ class HighResolutionFilamentSensor:
         """ Read data from sensor and sets our internal state to match. """
 
         eventtime = self.reactor.monotonic()
-        self._inspect_move_queue(eventtime)
+        self._inspect_commanded_move(eventtime)
 
         if self.uart:
             magnet_state = self.uart_read_reg1(SensorRegister.MAGNET_STATE)
@@ -511,11 +587,11 @@ class HighResolutionFilamentSensor:
         self._magnet_state = MagnetState(magnet_state)
         self._filament_present.set(filament_presence == 1)
 
-        self._sensor_rotation_helper.update_raw(full_turns, angle)
-        angle_change = self._sensor_rotation_helper.angle_change()
+        self._rotation_helper.update_raw(full_turns, angle)
+        angle_change = self._rotation_helper.angle_change()
 
         if angle_change != 0.0:
-            self._sensor_rotation_helper.clear_angle_change()
+            self._rotation_helper.clear_angle_change()
 
         if self.invert_direction:
             angle_change = angle_change * -1
@@ -524,17 +600,10 @@ class HighResolutionFilamentSensor:
         self.position += distance
 
         event = SensorEvent(eventtime, distance, self._get_extruder_pos(eventtime))
-        self._history.insert(0, event)
-
         if len(self._commanded_moves) > 0:
             move = self._commanded_moves[0]
             if not move.ended:
-                move.measured_distance += distance
-                move.sensor_events.insert(0, event)
-
-        if self._is_calibrating is False:
-            while len(self._history) > HISTORY_NUM_EVENTS:
-                self._history.pop()
+                move.add_sensor_event(event)
 
     def _handle_ready(self):
         """ Callback when printer becomes ready. """
@@ -553,6 +622,8 @@ class HighResolutionFilamentSensor:
         self._underextrusion_start_time = None
         self._underextruding.set(False)
         self._is_printing = True
+        self._commanded_moves = [] # clear move queue.
+        self._status_evaluation_move = None
 
     def _handle_not_printing(self, print_time):
         """ Callback when printing is finished. """
@@ -560,9 +631,13 @@ class HighResolutionFilamentSensor:
         logging.info("[%s] not printing" % (self.__class__.__name__, ))
         self._is_printing = False
 
+        self._mark_commanded_moves_ended()
+
+        return
+
+    def _mark_commanded_moves_ended(self):
         for move in self._commanded_moves:
             move.ended = True
-        return
 
     def _respond_error(self, msg):
         """ Print and error to the gcode console. """
@@ -618,7 +693,7 @@ class HighResolutionFilamentSensor:
         if not self._filament_present:
             return True
 
-        rate = self._measured_underextrusion_rate()
+        rate = self._measured_underextrusion_rate(self._status_evaluation_move)
         if rate > self.underextrusion_max_rate:
             if self._underextrusion_start_time is None:
                 self._underextrusion_start_time = self.reactor.monotonic()
@@ -683,6 +758,7 @@ class HighResolutionFilamentSensor:
     def _sensor_update_event(self, eventtime):
         """ Periodic timer to fetch sensor data and update internal state. """
         self._update_state_from_sensor()
+        self._status_evaluation_move = self._combine_moves_for_distance(self.move_evaluation_distance)
 
         if eventtime >= self.runout_helper.min_event_systime and self.runout_helper.sensor_enabled:
             self._check_print_issues(eventtime)
@@ -730,6 +806,17 @@ class HighResolutionFilamentSensor:
 
         gcmd.respond_info("Heater turned off")
 
+    def _combine_all_commanded_moves(self):
+        move = None
+
+        for _move in self._commanded_moves:
+            if not move:
+                move = _move
+            else:
+                move = self._combine_moves(move, _move)
+
+        return move
+
     def _collect_calibration_data(self, gcmd, distance, speed, num_runs):
         self._is_calibrating = True
 
@@ -738,35 +825,29 @@ class HighResolutionFilamentSensor:
             data = {}
             runs.append(data)
 
-            # self._history = []
+            self._commanded_moves = [] # clear move queue.
             data['expected_speed'] = speed / 60.
-            data['initial_sensor_pos'] = self.position
-            data['initial_extruder_pos'] = self._get_extruder_pos()
-            start_eventtime = self.reactor.monotonic()
-
-            self.reactor.pause(self.reactor.monotonic() + .1)
 
             # extrude some filament
             gcmd.respond_info("Extruding %.2fmm (at speed=%.2fmm/s, flow=%.2fmm³/s)... %d/%d" %
                               (distance, speed / 60., self._speed_to_volumetric_flow(speed / 60.), index + 1, num_runs))
             cmd = self._build_extrude_cmd(distance, speed)
-            self.gcode.run_script_from_command(cmd)
+            try:
+                self.gcode.run_script_from_command(cmd)
+            except Exception as e:
+                gcmd.respond_error(f"Error running extrude command: {e}")
+                return
 
             # Give time for everything to settle
-            self.reactor.pause(self.reactor.monotonic() + 3.)
+            t = self.reactor.monotonic()
+            while not self._commanded_moves[0].has_stopped_moving() and (self.reactor.monotonic() - t) < 3:
+                self.reactor.pause(self.reactor.monotonic() + 0.1)
+            self._mark_commanded_moves_ended()
 
-            data['final_sensor_pos'] = self.position
-            data['final_extruder_pos'] = self._get_extruder_pos()
-            data['expected_distance'] = data['final_extruder_pos'] - data['initial_extruder_pos']
-            data['actual_distance'] = data['final_sensor_pos'] - data['initial_sensor_pos']
-            data['history'] = [evt for evt in self._history if evt.eventtime >= start_eventtime]
-
-            move_history = [evt for evt in data['history'] if evt.distance != 0.]
-            move_times = [evt.eventtime for evt in move_history]
-            started, ended = min(move_times), max(move_times)
-            data['actual_duration'] = ended - started
-
-            self.reactor.pause(self.reactor.monotonic() + .1)
+            move = self._combine_all_commanded_moves()
+            data['expected_distance'] = move.expected_distance
+            data['actual_distance'] = move.measured_distance
+            data['actual_duration'] = move.duration
 
         self._is_calibrating = False
         return runs
@@ -787,7 +868,8 @@ class HighResolutionFilamentSensor:
         count = gcmd.get_int("COUNT", 3)
 
         runs = self._collect_calibration_data(gcmd, length, speed, count)
-        self._compute_rotation_distance_result(gcmd, runs)
+        if runs:
+            self._compute_rotation_distance_result(gcmd, runs)
 
         self._turn_off_heater(gcmd)
 
@@ -838,7 +920,7 @@ class HighResolutionFilamentSensor:
         return volumetric_flow / self.extruder.filament_area
 
     def _speed_to_volumetric_flow(self, speed):
-        return self.extruder.filament_area * speed
+        return (self.extruder.filament_area * speed) if speed else 0.0
 
     def _avg(self, array, key):
         values = [d[key] for d in array]
@@ -864,6 +946,9 @@ class HighResolutionFilamentSensor:
         while vflow < stop_vflow:
             speed = self._volumetric_flow_to_speed(vflow)
             runs = self._collect_calibration_data(gcmd, max(1, speed * duration), max(1, speed * 60), count)
+            if not runs:
+                self._turn_off_heater(gcmd)
+                return
             averages = {}
             averages['expected_speed'] = self._avg(runs, 'expected_speed')
             averages['expected_distance'] = self._avg(runs, 'expected_distance')
