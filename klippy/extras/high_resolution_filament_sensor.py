@@ -771,8 +771,8 @@ class HighResolutionFilamentSensor:
         r = 0
         while r < requested_distance:
             remaining_distance = (requested_distance - r)
-            if self.extruder.max_e_dist < remaining_distance:
-                distance = self.extruder.max_e_dist
+            if remaining_distance > (self.extruder.max_e_dist / 2):
+                distance = self.extruder.max_e_dist / 2
             else:
                 distance = remaining_distance
             cmd += "G1 E%.2f F%d\n" % (distance, speed)
@@ -835,7 +835,7 @@ class HighResolutionFilamentSensor:
             try:
                 self.gcode.run_script_from_command(cmd)
             except Exception as e:
-                gcmd.respond_error(f"Error running extrude command: {e}")
+                gcmd.respond_raw(f"!! Error running extrude command: {e}\n")
                 return
 
             # Give time for everything to settle
@@ -848,6 +848,10 @@ class HighResolutionFilamentSensor:
             data['expected_distance'] = move.expected_distance
             data['actual_distance'] = move.measured_distance
             data['actual_duration'] = move.duration
+
+            if not move.measured_distance or move.duration is None:
+                gcmd.respond_raw(f"!! Extruder did not move, stopping...\n")
+                break
 
         self._is_calibrating = False
         return runs
@@ -923,7 +927,9 @@ class HighResolutionFilamentSensor:
         return (self.extruder.filament_area * speed) if speed else 0.0
 
     def _avg(self, array, key):
-        values = [d[key] for d in array]
+        values = [d[key] for d in array if d[key] is not None]
+        if len(values) == 0:
+            return 0
         return sum(values) / len(values)
 
     cmd_CALIBRATE_MAX_FLOW_help = \
@@ -975,9 +981,9 @@ class HighResolutionFilamentSensor:
             actual_distance = data['actual_distance']
             move_duration = data['actual_duration']
 
-            move_speed = actual_distance / move_duration
+            move_speed = (actual_distance / move_duration) if move_duration else 0.0
             move_flow = self._speed_to_volumetric_flow(move_speed)
-            percent_flow = move_flow / expected_flow * 100.
+            percent_flow = (move_flow / expected_flow * 100.) if expected_flow else 0.0
 
             if percent_flow >= cutoff:
                 suggested_max_flow = self._speed_to_volumetric_flow(expected_speed)
