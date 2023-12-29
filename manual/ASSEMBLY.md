@@ -90,7 +90,7 @@ Add two wires between the RP2040 pins GP10/GP11 and the AS5600 pins SDA/SCL. Not
 
 <img src="../images/manual/015_soldered.jpg" height="200">
 
-Solder the 5V and GND pads on the AS5600 board to the 5V and GND pads on the RP2040.
+Solder the VCC and GND pads on the AS5600 board to the 3V3 and GND pads on the RP2040. The AS5600 board can be powered by 5V only if the 0Ω resistance (R1) is removed!
 
 <img src="../images/manual/015_soldered_2.jpg" height="200">
 
@@ -110,7 +110,7 @@ Add the M3 x 6mm BHCS and M3 x 10mm BHCS to the secure wire cover.
 
 <img src="../images/manual/016_assembled.jpg" height="200">
 
-Push the wires neatly snug together, without covering the RP2040 buttons or the LED. 
+Push the wires neatly snug together, without covering the RP2040 buttons or the LED.
 
 <img src="../images/manual/017_wires.jpg" height="200">
 
