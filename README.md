@@ -46,6 +46,7 @@ To get automatic updates within moonraker, add the following block at the end of
 type: git_repo
 path: ~/roadrunner-filament-sensor
 origin: https://github.com/EiNSTeiN-/roadrunner-filament-sensor.git
+install_script: install.sh
 primary_branch: main
 managed_services: klipper
 ```
@@ -83,10 +84,10 @@ rotation_distance: 23.4
 # circumference of the BMG gears in the sensor.
 underextrusion_max_rate: 0.5
 # What rate of underextrusion can be tolerated, as a value between 0.0 and 1.0.
-# The rate is calculated by comparing the extruder position to the measured 
-# filament length over a certain period. A rate of 0.0 means the measured 
-# filament motion matches the expected extrusion distance over the period. 
-# A rate of 1.0 means no filament motion was detected at all when some motion 
+# The rate is calculated by comparing the extruder position to the measured
+# filament length over a certain period. A rate of 0.0 means the measured
+# filament motion matches the expected extrusion distance over the period.
+# A rate of 1.0 means no filament motion was detected at all when some motion
 # was expected for the extruder.
 underextrusion_period: 5
 # How long should the underextrusion rate stay above the max rate before
@@ -109,7 +110,7 @@ CALIBRATE_FILAMENT_SENSOR_ROTATION_DISTANCE SENSOR=roadrunner TEMP=210 LENGTH=10
 * `SPEED`: The extrusion speed, in rotation per minute (e.g. 300 means 5mm/s). Default is 100.
 * `COUNT`: How many times to perform the test.
 
-The macro will heat up the extruder heater to the specified temperature, extrude some filament, 
+The macro will heat up the extruder heater to the specified temperature, extrude some filament,
 and print some stats. Make sure to specify a speed setting low enough to avoid overrunning your hotend, otherwise the rotation_distance will be wrong!
 
 Adjust the rotation distance until the reported range is acceptable for your setup, for example ±0.3mm seems like a good range for my own printer. While the sensor is high precision, its accuracy and repeatability over multiple readings can be affected by real world factors such as springiness in the PTFE tube, the attachement of the sensor to the body of the extruder, etc.
