@@ -220,6 +220,13 @@ class CommandedMove:
         self.first_motion_event : typing.Optional[SensorEvent] = None
         self.last_motion_event : typing.Optional[SensorEvent] = None
 
+    def __repr__(self):
+        return f"CommandedMove(t={self.eventtime}, pos={self.pos}, last_epos={self.last_epos}, " + \
+            f"epos={self.epos}, distance={self.distance}, expected_distance={self.expected_distance}, " + \
+            f"measured_distance={self.measured_distance}, ended={self.ended}, " + \
+            f"first={self.first_event.epos if self.first_event else None}, last={self.last_event.epos if self.last_event else None}" + \
+            ")"
+
     def add_sensor_event(self, event, capture=False):
         self.measured_distance += event.distance
         if capture:
@@ -262,7 +269,7 @@ class CommandedMove:
     def expected_distance(self) -> typing.Optional[float]:
         """ Returns distance that the extruder is expected to have travelled
         between the start of the move and the most recent sensor reading. """
-        if self.first_event:
+        if self.last_event:
             return self.last_event.epos - self.last_epos
 
     @property
@@ -334,7 +341,7 @@ class HighResolutionFilamentSensor:
         self.rotation_distance = config.getfloat('rotation_distance', minval=0)
         self.underextrusion_max_rate = config.getfloat('underextrusion_max_rate', minval=0.0, maxval=1.0)
         self.underextrusion_period = config.getfloat('underextrusion_period', minval=0.0)
-        self.move_evaluation_distance = config.getfloat('move_evaluation_distance', 1, minval=0.0)
+        self.move_evaluation_distance = config.getfloat('move_evaluation_distance', 3, minval=0.0)
 
         # Printer state
         self._commanded_moves : list[CommandedMove] = []
@@ -423,7 +430,6 @@ class HighResolutionFilamentSensor:
 
     def _combine_moves(self, newer : CommandedMove, older : CommandedMove):
         move = CommandedMove(older.eventtime, older.pos, older.last_epos, newer.epos)
-        move.distance = newer.epos - older.last_epos
         move.ended = newer.ended
         move.measured_distance = older.measured_distance + newer.measured_distance
         move.first_event = older.first_event or newer.first_event
@@ -433,7 +439,7 @@ class HighResolutionFilamentSensor:
         move.sensor_events = newer.sensor_events + older.sensor_events
         return move
 
-    def _combine_moves_for_distance(self, distance):
+    def _combine_all_commanded_moves(self, fn=None):
         move = None
 
         for _move in self._commanded_moves:
@@ -441,10 +447,17 @@ class HighResolutionFilamentSensor:
                 move = _move
             else:
                 move = self._combine_moves(move, _move)
-            if move.distance >= distance:
+            if fn and fn(move):
                 break
 
         return move
+
+    def _combine_moves_for_distance(self, distance):
+        _stop_fn = lambda move: move.expected_distance is not None and move.expected_distance >= distance
+        return self._combine_all_commanded_moves(_stop_fn)
+
+    def get_combined_moves(self):
+        return self._combine_all_commanded_moves()
 
     def get_status(self, eventtime):
         move = self._status_evaluation_move
@@ -455,6 +468,9 @@ class HighResolutionFilamentSensor:
             "sensor_connected": bool(self._sensor_connected),
             "magnet_state": str(self._magnet_state),
             "filament_detected": bool(self._filament_present),
+            # "debug": {
+            #     "move": repr(move),
+            # },
             "motion": {
                 "detected": move.detected if move else False,
                 "direction": str(move.direction) if move else "idle",
@@ -523,14 +539,14 @@ class HighResolutionFilamentSensor:
                 move.ended = True
                 previous_event = move.last_event
 
-            move = CommandedMove(eventtime, self.position, self._last_epos, epos)
+            move = CommandedMove(eventtime, self.position, previous_event.epos if previous_event else self._last_epos, epos)
             self._commanded_moves.insert(0, move)
             self._last_epos = move.epos
 
-            # insert last event from previous move (i.e. the previous sensor reading)
-            # into the current move, to get an accurate speed without discontinuity.
-            if previous_event:
-                move.add_sensor_event(previous_event, self._capture_history)
+            # # insert last event from previous move (i.e. the previous sensor reading)
+            # # into the current move, to get an accurate speed without discontinuity.
+            # if previous_event:
+            #     move.add_sensor_event(previous_event, self._capture_history)
 
         while len(self._commanded_moves) > 100:
             self._commanded_moves.pop()
@@ -767,20 +783,6 @@ class HighResolutionFilamentSensor:
             self._check_print_issues(eventtime)
 
         return eventtime + CHECK_RUNOUT_TIMEOUT
-
-    def _combine_all_commanded_moves(self):
-        move = None
-
-        for _move in self._commanded_moves:
-            if not move:
-                move = _move
-            else:
-                move = self._combine_moves(move, _move)
-
-        return move
-
-    def get_combined_moves(self):
-        return self._combine_all_commanded_moves()
 
     def clear_move_queue(self):
         self._commanded_moves = []

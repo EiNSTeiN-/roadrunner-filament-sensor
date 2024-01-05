@@ -11,9 +11,10 @@ except:
 
 class LeastSquares:
     """ Holds the result of a least-squares fitted curve. """
-    def __init__(self, iter):
+    def __init__(self, iter, rcond=None):
         self.x = np.array(list(iter.keys()))
         self.y = np.array(list(iter.values()))
+        self.rcond = rcond
         self._lstsq = None
 
     @cached_property
@@ -72,7 +73,8 @@ class CalibrationData:
         self.timeline = None
 
     def capture_move_stats(self, move):
-        self.expected_distance = move.expected_distance
+        if move.expected_distance is not None:
+            self.expected_distance = move.expected_distance
         self.actual_distance = move.measured_distance
         self.actual_duration = move.duration
         self.timeline = EventsTimeline(move.sensor_events)
@@ -101,11 +103,12 @@ class CalibrationData:
 
     @property
     def percent_extruded(self) -> typing.Optional[float]:
-        return self.actual_distance / self.expected_distance * 100.
+        if self.actual_distance is not None and self.expected_distance:
+            return self.actual_distance / self.expected_distance * 100.
 
     @property
     def deviation(self) -> typing.Optional[float]:
-        if self.actual_distance:
+        if self.actual_distance is not None and self.expected_distance is not None:
             return self.actual_distance - self.expected_distance
 
     @property
@@ -243,17 +246,23 @@ class HighResolutionFilamentSensorCalibration:
             move = self.sensor.get_combined_moves()
 
             if not move.measured_distance or move.duration is None:
-                gcmd.respond_raw(f"!! Extruder did not move, stopping...\n")
+                run.remove(data)
+                gcmd.respond_raw(f"!! No movement detected\n")
                 break
 
             data.capture_move_stats(move)
-            pos = data.timeline.measured_position
-            logging.info(f"fitness={pos.fitness}")
+            epos = data.timeline.expected_position
+            logging.info(f"expected_position slope={epos.slope} fitness={epos.fitness}")
+            mpos = data.timeline.measured_position
+            logging.info(f"measured_position slope={mpos.slope} fitness={mpos.fitness}")
+            logging.info(f"expected_volumetric_flow={data.expected_volumetric_flow}")
+            logging.info(f"slope_correction_factor={data.timeline.slope_correction_factor}")
+            logging.info(f"calibration_point=[{data.expected_volumetric_flow}, {data.timeline.slope_correction_factor}]")
             logging.info(f"timeline={repr(data.timeline)}")
-            if pos.fitness <= min_fitness:
+            if mpos.fitness <= min_fitness:
                 run.remove(data)
                 attempt += 1
-                gcmd.respond_raw(f"!! Failed to fit a curve, the measured fitness was {pos.fitness} (min. {min_fitness}). [{attempt}/{max_attempts}]\n")
+                gcmd.respond_raw(f"!! Failed to find well-fitted linear equation, the measured fitness was {mpos.fitness} (min. {min_fitness}). [{attempt}/{max_attempts}]\n")
                 if attempt >= max_attempts:
                     break
             else:
@@ -341,18 +350,20 @@ class HighResolutionFilamentSensorCalibration:
             start_vflow = gcmd.get_float("START", 5.)
             stop_vflow = gcmd.get_float("STOP", 25.)
             step = gcmd.get_float("STEP", 1.)
-            count = gcmd.get_int("COUNT", 3)
+            # count = gcmd.get_int("COUNT", 3)
             min_fitness = gcmd.get_float("MIN_FITNESS", 0.999)
 
             run = CalibrationRun(self)
             vflow = start_vflow
             while vflow < stop_vflow:
                 speed = self.volumetric_flow_to_speed(vflow)
-                _run = self._collect_calibration_data(gcmd, max(1, speed * duration), max(1, speed * 60), count, min_fitness)
+                _run = self._collect_calibration_data(gcmd, max(1, speed * duration), max(1, speed * 60), 1, min_fitness)
                 if not _run:
-                    self._turn_off_heater(gcmd)
-                    return
-                run.datum.append(_run.get_data_averages())
+                    break
+                if _run.count == 0:
+                    gcmd.respond_raw(f"!! Stopping at {vflow:.2f}mm³/s\n")
+                    break
+                run.datum.append(_run.datum[0])
                 vflow += step
             self._compute_max_flow_result(gcmd, run)
         finally:
@@ -367,17 +378,25 @@ class HighResolutionFilamentSensorCalibration:
         for index in range(run.count):
             data = run.datum[index]
 
-            percent_flow = data.percent_volumetric_flow or 0.0
+            # the factor used below is the ratio between the slope of
+            # the measured position over the slope of the expected position
+            # during the extrusion move. the slope is the speed at which
+            # the filament is moving, so this gives a measure of how much
+            # under-extrusion took place.
+            if data.timeline:
+                factor = data.timeline.measured_position.slope / data.timeline.expected_position.slope * 100.
+            else:
+                factor = 0.
 
-            if percent_flow >= cutoff:
+            if factor >= cutoff:
                 suggested_max_flow = data.expected_volumetric_flow
 
-            stats.append("Run %d/%d - requested=%.2fmm (at speed=%.2fmm/s, flow=%.2fmm³/s), measured=%.2fmm in %.2f seconds (at speed=%.2fmm/, flow=%.2fmm³/s) = %.2f%% vol. flow" %
+            stats.append("Run %d/%d - requested=%.2fmm (at speed=%.2fmm/s, flow=%.2fmm³/s), measured=%.2fmm in %.2f seconds (at speed=%.2fmm/, flow=%.2fmm³/s) = %.2f%%" %
                          (index + 1, run.count,
                          data.expected_distance, data.expected_speed, data.expected_volumetric_flow,
                           data.actual_distance or 0.0, data.actual_duration or 0.0,
                           data.actual_speed or 0.0, data.actual_volumetric_flow or 0.0,
-                          percent_flow))
+                          factor))
         gcmd.respond_info("\n".join(stats))
 
         if suggested_max_flow is None:
