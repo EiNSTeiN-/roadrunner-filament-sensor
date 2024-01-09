@@ -130,7 +130,7 @@ class SensorRotationHelper:
         self._absolute_angular_position = 0
 
         # Angle change since the value was last reset
-        self._angle_change = 0
+        self._last_absolute_angular_position = None
 
     @property
     def angular_resolution(self):
@@ -143,11 +143,14 @@ class SensorRotationHelper:
 
     def angle_change(self):
         """ The change in angle since clear_angle_change was last called. """
-        return ((self._angle_change & ~self.mask) / float(self.angle_max_value) * 360.)
+        if self._last_absolute_angular_position is None:
+            return 0.
+        angle_change = self._absolute_angular_position - self._last_absolute_angular_position
+        return ((angle_change & ~self.mask) / float(self.angle_max_value) * 360.)
 
     def clear_angle_change(self):
         """ Sets the current angle change to 0. """
-        self._angle_change = 0
+        self._last_absolute_angular_position = self._absolute_angular_position
 
     def update_raw(self, turns, angle):
         """ Set the current number of full turns and the current angle,
@@ -156,12 +159,10 @@ class SensorRotationHelper:
         self._angle = angle
 
         # calculate angle change since last update
-        abs_angular_pos = (turns * self.angle_max_value) + angle
-        angle_change = abs_angular_pos - self._absolute_angular_position
-        self._absolute_angular_position = abs_angular_pos
+        self._absolute_angular_position = (turns * self.angle_max_value) + angle
 
-        # keep track of cumulative change since value was last reset
-        self._angle_change += angle_change
+        if self._last_absolute_angular_position is None:
+            self._last_absolute_angular_position = self._absolute_angular_position
 
 class MotionDirection:
     """" Wrapper for the motion direction. """
@@ -210,9 +211,6 @@ class CommandedMove:
         # False while the move is happening, True once the printer is stopped or another move starts.
         self.ended : bool = False
 
-        # Running total of 'distance' for all `SensorEvent`, while the move is happening
-        self.measured_distance : float = 0.0
-
         # All `SensorEvent` objects that happened during this move
         self.sensor_events : list[SensorEvent] = []
         self.first_event : typing.Optional[SensorEvent] = None
@@ -228,7 +226,6 @@ class CommandedMove:
             ")"
 
     def add_sensor_event(self, event, capture=False):
-        self.measured_distance += event.distance
         if capture:
             self.sensor_events.insert(0, event)
         if self.first_event is None:
@@ -271,6 +268,14 @@ class CommandedMove:
         between the start of the move and the most recent sensor reading. """
         if self.last_event:
             return self.last_event.epos - self.last_epos
+
+    @property
+    def measured_distance(self) -> float:
+        """ Returns the difference in sensor position between the first and last event. """
+        if self.last_event:
+            return self.last_event.position - self.first_event.position
+        else:
+            return 0.
 
     @property
     def speed(self) -> typing.Optional[float]:
@@ -431,7 +436,6 @@ class HighResolutionFilamentSensor:
     def _combine_moves(self, newer : CommandedMove, older : CommandedMove):
         move = CommandedMove(older.eventtime, older.pos, older.last_epos, newer.epos)
         move.ended = newer.ended
-        move.measured_distance = older.measured_distance + newer.measured_distance
         move.first_event = older.first_event or newer.first_event
         move.first_motion_event = older.first_motion_event or newer.first_motion_event
         move.last_motion_event = newer.last_motion_event or older.last_motion_event
@@ -607,16 +611,17 @@ class HighResolutionFilamentSensor:
         self._filament_present.set(filament_presence == 1)
 
         self._rotation_helper.update_raw(full_turns, angle)
-        angle_change = self._rotation_helper.angle_change()
 
+        inv = (-1 if self.invert_direction else 1)
+        self.position = self.rotation_distance * (self._rotation_helper.absolute_angular_position() * inv) / 360.
+
+        angle_change = self._rotation_helper.angle_change() * inv
         if angle_change != 0.0:
             self._rotation_helper.clear_angle_change()
 
-        if self.invert_direction:
-            angle_change = angle_change * -1
-
-        distance = self.rotation_distance * angle_change / 360.
-        self.position += distance
+            distance = self.rotation_distance * angle_change / 360.
+        else:
+            distance = 0.
 
         event = SensorEvent(eventtime, self.position, distance, self._get_extruder_pos(eventtime))
         if len(self._commanded_moves) > 0:
