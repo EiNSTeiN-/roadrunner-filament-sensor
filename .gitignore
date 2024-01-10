@@ -1,0 +1,4 @@
+rp2040/build/
+rp2040/generated/
+script/__pycache__/
+script/venv/
