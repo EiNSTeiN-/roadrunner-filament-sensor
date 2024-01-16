@@ -1,4 +1,3 @@
-import struct
 import logging
 import typing
 from collections import OrderedDict
@@ -50,7 +49,7 @@ class LeastSquares:
 class EventsTimeline:
     def __init__(self, events):
         self._events = {e.eventtime: e for e in sorted(events, key=lambda e: e.eventtime)}
-        self._move_events = {e.eventtime: e for e in self._events.values() if e.distance > 0}
+        self._move_events = {e.eventtime: e for e in self._events.values() if e.distance != 0.}
         self.expected_position = LeastSquares({e.eventtime: e.epos for e in self._move_events.values()})
         self.measured_position = LeastSquares({e.eventtime: e.position for e in self._move_events.values()})
 
@@ -82,7 +81,7 @@ class CalibrationData:
     @property
     def expected_speed(self):
         if self.timeline:
-            return self.timeline.expected_position.slope
+            return abs(self.timeline.expected_position.slope)
         else:
             return self._expected_speed
 
@@ -93,9 +92,9 @@ class CalibrationData:
     @property
     def actual_speed(self) -> typing.Optional[float]:
         if self.timeline:
-            return self.timeline.measured_position.slope
+            return abs(self.timeline.measured_position.slope)
         elif self.actual_distance and self.actual_duration:
-            return self.actual_distance / self.actual_duration
+            return abs(self.actual_distance) / self.actual_duration
 
     @property
     def actual_volumetric_flow(self) -> typing.Optional[float]:
@@ -175,14 +174,17 @@ class HighResolutionFilamentSensorCalibration:
     def _build_extrude_cmd(self, requested_distance, speed):
         cmd = "M83\n"
 
-        r = 0
+        dir = -1 if requested_distance < 0 else 1
+        requested_distance = abs(requested_distance)
+
+        r = 0.
         while r < requested_distance:
             remaining_distance = (requested_distance - r)
             if remaining_distance > (self.sensor.extruder.max_e_dist / 2):
                 distance = self.sensor.extruder.max_e_dist / 2
             else:
                 distance = remaining_distance
-            cmd += "G1 E%.2f F%d\n" % (distance, speed)
+            cmd += "G1 E%.2f F%d\n" % (distance * dir, speed)
             r += distance
 
         cmd += "M400\n" # wait for move to finish
@@ -213,8 +215,22 @@ class HighResolutionFilamentSensorCalibration:
 
         gcmd.respond_info("Heater turned off")
 
-    def _collect_calibration_data(self, gcmd, distance, speed, num_runs, min_fitness, max_attempts=3):
-        run = CalibrationRun(self)
+    def _ensure_stopped(self, timeout=3.):
+        """ Wait until the sensor readings have a chance to settle. """
+        t = self.reactor.monotonic()
+        while not self.sensor.has_stopped_moving() and (self.reactor.monotonic() - t) < timeout:
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
+        self.sensor.all_moves_ended()
+
+    def run_script_from_command(self, gcmd, cmd):
+        try:
+            self.gcode.run_script_from_command(cmd)
+        except Exception as e:
+            gcmd.respond_raw(f"!! Error running extrude command: {e}\n")
+            return False
+        return True
+
+    def _collect_calibration_data(self, gcmd, run, distance, speed, num_runs, min_fitness, max_attempts=3, revert_position=False):
         index = 0
         attempt = 0
 
@@ -226,20 +242,14 @@ class HighResolutionFilamentSensorCalibration:
                 self.sensor.capture_history(True)
 
                 # extrude some filament
-                gcmd.respond_info("Extruding %.2fmm (at speed=%.2fmm/s, flow=%.2fmm³/s)... %d/%d" %
-                                (data.expected_distance, data.expected_speed, data.expected_volumetric_flow, index + 1, num_runs))
+                verb = "Extruding" if distance > 0 else "Reversing"
+                gcmd.respond_info("%s %.2fmm (at speed=%.2fmm/s, flow=%.2fmm³/s)... %d/%d" %
+                                (verb, abs(data.expected_distance), data.expected_speed, data.expected_volumetric_flow, index + 1, num_runs))
                 cmd = self._build_extrude_cmd(distance, speed)
-                try:
-                    self.gcode.run_script_from_command(cmd)
-                except Exception as e:
-                    gcmd.respond_raw(f"!! Error running extrude command: {e}\n")
-                    return
-
-                # Give time for everything to settle
-                t = self.reactor.monotonic()
-                while not self.sensor.has_stopped_moving() and (self.reactor.monotonic() - t) < 3:
-                    self.reactor.pause(self.reactor.monotonic() + 0.1)
-                self.sensor.all_moves_ended()
+                if not self.run_script_from_command(gcmd, cmd):
+                    # an error occured running the script
+                    return False
+                self._ensure_stopped()
             finally:
                 self.sensor.capture_history(False)
 
@@ -250,6 +260,15 @@ class HighResolutionFilamentSensorCalibration:
                 gcmd.respond_raw(f"!! No movement detected\n")
                 break
 
+            # If needed, revert entire move without capturing
+            if revert_position:
+                cmd = self._build_extrude_cmd(-distance, speed)
+                if not self.run_script_from_command(gcmd, cmd):
+                    # an error occured running the script
+                    return False
+                self._ensure_stopped()
+
+            # Check if we can find a well-fitted straight line through all data points
             data.capture_move_stats(move)
             epos = data.timeline.expected_position
             logging.info(f"expected_position slope={epos.slope} fitness={epos.fitness}")
@@ -257,7 +276,9 @@ class HighResolutionFilamentSensorCalibration:
             logging.info(f"measured_position slope={mpos.slope} fitness={mpos.fitness}")
             logging.info(f"expected_volumetric_flow={data.expected_volumetric_flow}")
             logging.info(f"slope_correction_factor={data.timeline.slope_correction_factor}")
-            logging.info(f"calibration_point=[{data.expected_volumetric_flow}, {data.timeline.slope_correction_factor}]")
+            logging.info(f"calibration_point1=[{data.expected_volumetric_flow}, {data.timeline.slope_correction_factor}],")
+            factor = data.timeline.measured_position.slope / data.timeline.expected_position.slope * 100.
+            logging.info(f"calibration_point2=[{data.expected_volumetric_flow}, {factor}],")
             logging.info(f"timeline={repr(data.timeline)}")
             if mpos.fitness <= min_fitness:
                 run.remove(data)
@@ -269,7 +290,7 @@ class HighResolutionFilamentSensorCalibration:
                 index += 1
                 attempt = 0
 
-        return run
+        return True
 
     cmd_CALIBRATE_FILAMENT_SENSOR_ROTATION_DISTANCE_help = \
         "Heats up the extruder and perform an extrusion test " \
@@ -288,10 +309,36 @@ class HighResolutionFilamentSensorCalibration:
             count = gcmd.get_int("COUNT", 3)
             min_fitness = gcmd.get_float("MIN_FITNESS", 0.999)
 
-            if run := self._collect_calibration_data(gcmd, length, speed, count, min_fitness):
+            run = CalibrationRun(self)
+            self._collect_calibration_data(gcmd, run, -length, speed, count, min_fitness, revert_position=True)
+
+            if run.count > 0:
                 self._compute_rotation_distance_result(gcmd, run, length)
         finally:
             self._turn_off_heater(gcmd)
+
+    def _deviation_result(self, run):
+        distances = [abs(data.actual_distance) for data in run.datum if data.actual_distance is not None]
+        if len(distances):
+            deviation_range = max(distances) - min(distances)
+            return ("Deviation between readings: %.3fmm (%d times min. detectable change of %.3fmm)." %
+                        (deviation_range,
+                        round(deviation_range / self.sensor.detectable_distance_change()),
+                        self.sensor.detectable_distance_change()))
+
+    def _repeatability_result(self, run, requested_distance):
+        frequencies = {}
+        for data in run.datum:
+            if data.actual_distance not in frequencies:
+                frequencies[data.actual_distance] = 1
+            else:
+                frequencies[data.actual_distance] += 1
+
+        sorted_frequencies = sorted(frequencies.keys(), key=lambda k: frequencies[k], reverse=True)
+        most_frequent_distance = sorted_frequencies[0]
+        rotation_distance = self.sensor.rotation_distance * (requested_distance / abs(most_frequent_distance))
+        return ("Most frequent reading: %.2f with %d measurement(s), which implies a 'correct' rotation distance of %.7f." %
+                    (abs(most_frequent_distance), frequencies[most_frequent_distance], rotation_distance)), rotation_distance
 
     def _compute_rotation_distance_result(self, gcmd, run, requested_distance):
         stats = []
@@ -299,36 +346,21 @@ class HighResolutionFilamentSensorCalibration:
             data = run.datum[index]
 
             stats.append("Run %d/%d - requested=%.2fmm (at speed=%.2fmm/s, flow=%.2fmm³/s), measured=%.2fmm in %.2f seconds (at speed=%.2fmm/, flow=%.2fmm³/s) = %.2f%% extruded" %
-                         (index + 1, run.count,
-                         data.expected_distance, data.expected_speed, data.expected_volumetric_flow,
-                          data.actual_distance or 0.0, data.actual_duration or 0.0,
-                          data.actual_speed or 0.0, data.actual_volumetric_flow or 0.0,
-                          data.percent_extruded or 0.0))
+                        (index + 1, run.count,
+                            abs(data.expected_distance), data.expected_speed, data.expected_volumetric_flow,
+                            abs(data.actual_distance) or 0.0, data.actual_duration or 0.0,
+                            data.actual_speed or 0.0, data.actual_volumetric_flow or 0.0,
+                            data.percent_extruded or 0.0))
         gcmd.respond_info("\n".join(stats))
 
-        stats = []
-        avg = run.get_data_averages()
-        stats.append("Avg move distance: %.2fmm" % (avg.actual_distance or 0.0, ))
-        stats.append("Avg move duration: %.2f seconds" % (avg.actual_duration or 0.0, ))
-        stats.append("Avg move speed: %.2fmm/s" % (avg.actual_speed or 0.0, ))
-        stats.append("Avg volumetric flow: %.2fmm³/s" % (avg.actual_volumetric_flow or 0.0, ))
-        deviations = list(filter(None, [d.deviation for d in run.datum]))
-        if len(deviations):
-            stats.append("Observed deviation range: [%.2fmm, %.2fmm]" % (min(deviations), max(deviations)))
-        gcmd.respond_info("\n".join(stats))
+        if result := self._deviation_result(run):
+            gcmd.respond_info(result)
 
-        rotation_distances = list(filter(None, [d.corrected_rotation_distance(self.sensor.rotation_distance) for d in run.datum]))
-        if len(rotation_distances):
-            gcmd.respond_info("Suggested rotation_distance for %s: %.7f" % (self.sensor.name, np.mean(rotation_distances)))
+        result, rotation_distance = self._repeatability_result(run, requested_distance)
+        gcmd.respond_info(result)
 
-            range_min = min(rotation_distances)
-            range_max = max(rotation_distances)
-            if self.sensor.rotation_distance > range_min and self.sensor.rotation_distance < range_max:
-                gcmd.respond_info("The current rotation_distance %.3f is within the range of measured values [%.3f .. %.3f]." % \
-                    (self.sensor.rotation_distance, range_min, range_max))
-                gcmd.respond_info("Keeping the existing rotation_distance is recommended.")
-        else:
-            gcmd.respond_raw(f"!! Rotation distance could not be calculated\n")
+        if rotation_distance == self.sensor.rotation_distance:
+            gcmd.respond_info("Keeping the existing rotation_distance is recommended.")
 
     def volumetric_flow_to_speed(self, volumetric_flow):
         return volumetric_flow / self.sensor.extruder.filament_area
@@ -350,54 +382,52 @@ class HighResolutionFilamentSensorCalibration:
             start_vflow = gcmd.get_float("START", 5.)
             stop_vflow = gcmd.get_float("STOP", 25.)
             step = gcmd.get_float("STEP", 1.)
-            # count = gcmd.get_int("COUNT", 3)
+            count = gcmd.get_int("COUNT", 3)
             min_fitness = gcmd.get_float("MIN_FITNESS", 0.999)
 
-            run = CalibrationRun(self)
+            runs = {}
+
             vflow = start_vflow
-            while vflow < stop_vflow:
+            while vflow <= stop_vflow:
                 speed = self.volumetric_flow_to_speed(vflow)
-                _run = self._collect_calibration_data(gcmd, max(1, speed * duration), max(1, speed * 60), 1, min_fitness)
-                if not _run:
-                    break
-                if _run.count == 0:
+                runs[vflow] = run = CalibrationRun(self)
+                ok = self._collect_calibration_data(gcmd, run, max(1, speed * duration), max(1, speed * 60), count, min_fitness)
+                if not ok:
                     gcmd.respond_raw(f"!! Stopping at {vflow:.2f}mm³/s\n")
                     break
-                run.datum.append(_run.datum[0])
                 vflow += step
-            self._compute_max_flow_result(gcmd, run)
+            self._compute_max_flow_result(gcmd, runs)
         finally:
             self._turn_off_heater(gcmd)
 
-    def _compute_max_flow_result(self, gcmd, run):
+    def _compute_max_flow_result(self, gcmd, runs):
         suggested_max_flow = None
 
         cutoff = gcmd.get_float("MIN_EXTRUSION_RATE", 98.)
 
-        stats = []
-        for index in range(run.count):
-            data = run.datum[index]
+        for run in runs.values():
+            stats = []
+            for index, data in enumerate(run.datum):
+                # the factor used below is the ratio between the slope of
+                # the measured position over the slope of the expected position
+                # during the extrusion move. the slope is the speed at which
+                # the filament is moving, so this gives a measure of how much
+                # under-extrusion took place.
+                if data.timeline:
+                    factor = data.timeline.measured_position.slope / data.timeline.expected_position.slope * 100.
+                else:
+                    factor = 0.
 
-            # the factor used below is the ratio between the slope of
-            # the measured position over the slope of the expected position
-            # during the extrusion move. the slope is the speed at which
-            # the filament is moving, so this gives a measure of how much
-            # under-extrusion took place.
-            if data.timeline:
-                factor = data.timeline.measured_position.slope / data.timeline.expected_position.slope * 100.
-            else:
-                factor = 0.
+                if factor >= cutoff:
+                    suggested_max_flow = data.expected_volumetric_flow
 
-            if factor >= cutoff:
-                suggested_max_flow = data.expected_volumetric_flow
-
-            stats.append("Run %d/%d - requested=%.2fmm (at speed=%.2fmm/s, flow=%.2fmm³/s), measured=%.2fmm in %.2f seconds (at speed=%.2fmm/, flow=%.2fmm³/s) = %.2f%%" %
-                         (index + 1, run.count,
-                         data.expected_distance, data.expected_speed, data.expected_volumetric_flow,
-                          data.actual_distance or 0.0, data.actual_duration or 0.0,
-                          data.actual_speed or 0.0, data.actual_volumetric_flow or 0.0,
-                          factor))
-        gcmd.respond_info("\n".join(stats))
+                stats.append("Run %d/%d - requested=%.2fmm (at speed=%.2fmm/s, flow=%.2fmm³/s), measured=%.2fmm in %.2f seconds (at speed=%.2fmm/, flow=%.2fmm³/s) = %.2f%%" %
+                            (index + 1, run.count,
+                            data.expected_distance, data.expected_speed, data.expected_volumetric_flow,
+                            data.actual_distance or 0.0, data.actual_duration or 0.0,
+                            data.actual_speed or 0.0, data.actual_volumetric_flow or 0.0,
+                            factor))
+            gcmd.respond_info("\n".join(stats))
 
         if suggested_max_flow is None:
             gcmd.respond_info("None of the measured extrusion moves have resulted in a vol. flow above %.2f%% of the requested flow, " \
