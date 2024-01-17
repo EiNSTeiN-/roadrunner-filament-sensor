@@ -51,27 +51,18 @@ class LeastSquares:
 
 class Polynomial:
     """ Holds the result of solving a 3rd degree polynomial equation. """
-    def __init__(self, iter):
-        self.x = np.array(list(iter.keys()))
-        self.y = np.array(list(iter.values()))
-        self._polyfit = None
+    def __init__(self, coefs):
+        self.coefficients = coefs
 
-    @cached_property
-    def coefficients(self):
-        if self._polyfit is None:
-            self._polyfit = np.polynomial.polynomial.polyfit(self.x, self.y, 3)
-        return self._polyfit
+    @classmethod
+    def from_values(cls, iter, deg=3):
+        x = np.array(list(iter.keys()))
+        y = np.array(list(iter.values()))
+        coefs = np.polynomial.polynomial.polyfit(x, y, deg)
+        return cls(coefs)
 
-    @cached_property
-    def A(self):
-        return self.coefficients[2]
-
-    @cached_property
-    def B(self):
-        return self.coefficients[3]
-
-    def solve(self, y):
-        return y + self.A * (y ** 2) + self.B * (y ** 3)
+    def solve(self, x):
+        return np.polynomial.polynomial.polyval(x, self.coefficients)
 
 class EventsTimeline:
     def __init__(self, events):
@@ -468,8 +459,12 @@ class HighResolutionFilamentSensorCalibration:
             gcmd.respond_info(f"Not all measurements were completed. At {first_error}mm³/s or above, some measurements could not be taken. " \
                               "This is likely the maximum possible volumetric flow with this combination of filament, nozzle, and temperature.")
 
-        poly = Polynomial({np.average(v): k for k, v in points.items()})
-        gcmd.respond_info(f"Polynomial curve: A={poly.A:.7f} B={poly.B:.7f}")
+        # 'poly' fits the measured values as they are
+        # 'cpoly' fits the corrected values as they should have been to produce the expected values
+        poly = Polynomial.from_values({np.average(v): k for k, v in points.items()})
+        cpoly = Polynomial.from_values({k: np.average(v) for k, v in points.items()})
+        coefs = ', '.join([f"{coef:0.7f}" for coef in cpoly.coefficients])
+        gcmd.respond_info(f"Polynomial coefficients: {coefs}")
 
         suggested_max_speed = None
         for speed, measurements in reversed(points.items()):
@@ -490,23 +485,20 @@ class HighResolutionFilamentSensorCalibration:
             datestr = time.strftime("%Y%m%d_%H%M%S")
             fname = f"CALIBRATE_MAX_FLOW_measured_vs_expected_speed_{datestr}.png"
 
-            fig = plt.figure(figsize=(20, 12))
+            fig = plt.figure(figsize=(20, 20))
             plt.plot(list(points.values()), list(points.keys()), "ro", markersize=2)
             smooth_x=np.arange(0, max(points.keys()), .1)
-            plt.plot(smooth_x,np.polynomial.polynomial.polyval(smooth_x, poly.coefficients), label=f"Polynomial curve (A={poly.A:.7f} B={poly.B:.7f})")
+            plt.plot(list(points.keys()), list(points.keys()), label="Target (speed with negligible slip)", markersize=2, alpha=0.2)
+            plt.plot(smooth_x, poly.solve(smooth_x), label=f"Measured speed (fitted polynomial)")
 
+            poly_min = Polynomial.from_values({np.min(v): k for k, v in points.items()})
+            poly_max = Polynomial.from_values({np.max(v): k for k, v in points.items()})
+            plt.fill_between(smooth_x, poly_min.solve(smooth_x), poly_max.solve(smooth_x), alpha=0.2)
 
-            poly_min = Polynomial({np.min(v): k for k, v in points.items()})
-            poly_max = Polynomial({np.max(v): k for k, v in points.items()})
-            ymin = np.polynomial.polynomial.polyval(smooth_x, poly_min.coefficients)
-            ymax = np.polynomial.polynomial.polyval(smooth_x, poly_max.coefficients)
-            plt.fill_between(smooth_x, ymin, ymax, alpha=0.2)
-
-            plt.title("Measured vs expected extrusion speed")
+            plt.title(f"Measured vs expected extrusion speed\nCoefficients: {coefs}", loc='left')
             plt.xlabel("Measured speed")
             plt.ylabel("Expected speed")
             plt.legend(loc='lower right')
-            plt.show()
             fig.savefig(fname)
             plt.close(fig)
 
