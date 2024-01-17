@@ -1,12 +1,15 @@
 import logging
 import typing
+import time
+import math
 from collections import OrderedDict
 from functools import cached_property
 
 try:
     import numpy as np
+    import matplotlib.pyplot as plt
 except:
-    raise RuntimeError("numpy is required, did ~/roadrunner-filament-sensor/install.sh run successfully?")
+    raise RuntimeError("extra dependencies are missing, did ~/roadrunner-filament-sensor/install.sh run successfully?")
 
 class LeastSquares:
     """ Holds the result of a least-squares fitted curve. """
@@ -45,6 +48,30 @@ class LeastSquares:
         y1 = ((self.slope * self.x + self.base) - self.mean) ** 2
         y2 = (self.y - self.mean) ** 2
         return sum(y1) / sum(y2)
+
+class Polynomial:
+    """ Holds the result of solving a 3rd degree polynomial equation. """
+    def __init__(self, iter):
+        self.x = np.array(list(iter.keys()))
+        self.y = np.array(list(iter.values()))
+        self._polyfit = None
+
+    @cached_property
+    def coefficients(self):
+        if self._polyfit is None:
+            self._polyfit = np.polynomial.polynomial.polyfit(self.x, self.y, 3)
+        return self._polyfit
+
+    @cached_property
+    def A(self):
+        return self.coefficients[2]
+
+    @cached_property
+    def B(self):
+        return self.coefficients[3]
+
+    def solve(self, y):
+        return y + self.A * (y ** 2) + self.B * (y ** 3)
 
 class EventsTimeline:
     def __init__(self, events):
@@ -242,7 +269,7 @@ class HighResolutionFilamentSensorCalibration:
                 self.sensor.capture_history(True)
 
                 # extrude some filament
-                verb = "Extruding" if distance > 0 else "Reversing"
+                verb = "Extruding" if distance > 0 else "Retracting"
                 gcmd.respond_info("%s %.2fmm (at speed=%.2fmm/s, flow=%.2fmm³/s)... %d/%d" %
                                 (verb, abs(data.expected_distance), data.expected_speed, data.expected_volumetric_flow, index + 1, num_runs))
                 cmd = self._build_extrude_cmd(distance, speed)
@@ -293,7 +320,7 @@ class HighResolutionFilamentSensorCalibration:
         return True
 
     cmd_CALIBRATE_FILAMENT_SENSOR_ROTATION_DISTANCE_help = \
-        "Heats up the extruder and perform an extrusion test " \
+        "Heats up the extruder and perform a retraction test " \
         "at the specified temperature, speed and length. The " \
         "command will print a recommended rotation_distance " \
         "for the filament sensor based on the measurements. " \
@@ -305,8 +332,8 @@ class HighResolutionFilamentSensorCalibration:
             self._heat_to_temperature(gcmd)
 
             length = gcmd.get_int("LENGTH", 25)
-            speed = gcmd.get_int("SPEED", 100)
-            count = gcmd.get_int("COUNT", 3)
+            speed = gcmd.get_int("SPEED", 60 * 0.5) # 0.5mm/s
+            count = gcmd.get_int("COUNT", 10)
             min_fitness = gcmd.get_float("MIN_FITNESS", 0.999)
 
             run = CalibrationRun(self)
@@ -378,11 +405,11 @@ class HighResolutionFilamentSensorCalibration:
             self._activate_extruder(gcmd)
             self._heat_to_temperature(gcmd)
 
-            duration = gcmd.get_int("DURATION", 5)
+            duration = gcmd.get_int("DURATION", 10)
             start_vflow = gcmd.get_float("START", 5.)
             stop_vflow = gcmd.get_float("STOP", 25.)
             step = gcmd.get_float("STEP", 1.)
-            count = gcmd.get_int("COUNT", 3)
+            count = gcmd.get_int("COUNT", 5)
             min_fitness = gcmd.get_float("MIN_FITNESS", 0.999)
 
             runs = {}
@@ -391,46 +418,96 @@ class HighResolutionFilamentSensorCalibration:
             while vflow <= stop_vflow:
                 speed = self.volumetric_flow_to_speed(vflow)
                 runs[vflow] = run = CalibrationRun(self)
-                ok = self._collect_calibration_data(gcmd, run, max(1, speed * duration), max(1, speed * 60), count, min_fitness)
+                ok = self._collect_calibration_data(gcmd, run, max(1, math.ceil(speed * duration)), max(1, speed * 60), count, min_fitness)
                 if not ok:
                     gcmd.respond_raw(f"!! Stopping at {vflow:.2f}mm³/s\n")
                     break
                 vflow += step
-            self._compute_max_flow_result(gcmd, runs)
+            self._compute_max_flow_result(gcmd, runs, count, stop_vflow)
         finally:
             self._turn_off_heater(gcmd)
 
-    def _compute_max_flow_result(self, gcmd, runs):
-        suggested_max_flow = None
+    def _compute_max_flow_result(self, gcmd, runs, expected_count, stop_vflow):
+        cutoff = gcmd.get_float("MAX_SPEED_DEVIATION", 0.05)
 
-        cutoff = gcmd.get_float("MIN_EXTRUSION_RATE", 98.)
+        first_error = None
+        max_vflow_without_error = None
+        averages = {}
+        points = {}
+        for vflow, run in runs.items():
+            requested_speed = self.volumetric_flow_to_speed(vflow)
+            if run.count == expected_count:
+                max_vflow_without_error = vflow
+                points[requested_speed] = [data.timeline.measured_position.slope for data in run.datum if data.timeline]
+                avg = np.average(points[requested_speed])
+                averages[avg] = requested_speed
+            elif first_error is None:
+                first_error = vflow
 
-        for run in runs.values():
             stats = []
             for index, data in enumerate(run.datum):
-                # the factor used below is the ratio between the slope of
-                # the measured position over the slope of the expected position
-                # during the extrusion move. the slope is the speed at which
-                # the filament is moving, so this gives a measure of how much
-                # under-extrusion took place.
                 if data.timeline:
-                    factor = data.timeline.measured_position.slope / data.timeline.expected_position.slope * 100.
+                    measured_speed = data.timeline.measured_position.slope
+                    deviation = abs((requested_speed - measured_speed) / requested_speed)
                 else:
-                    factor = 0.
+                    deviation = 0.
 
-                if factor >= cutoff:
-                    suggested_max_flow = data.expected_volumetric_flow
-
-                stats.append("Run %d/%d - requested=%.2fmm (at speed=%.2fmm/s, flow=%.2fmm³/s), measured=%.2fmm in %.2f seconds (at speed=%.2fmm/, flow=%.2fmm³/s) = %.2f%%" %
+                stats.append("Run %d/%d - requested=%.2fmm (at speed=%.2fmm/s, flow=%.2fmm³/s), measured=%.2fmm in %.2f seconds (at speed=%.2fmm/s, flow=%.2fmm³/s) = %.2f%% speed deviation" %
                             (index + 1, run.count,
                             data.expected_distance, data.expected_speed, data.expected_volumetric_flow,
                             data.actual_distance or 0.0, data.actual_duration or 0.0,
                             data.actual_speed or 0.0, data.actual_volumetric_flow or 0.0,
-                            factor))
+                            deviation * 100))
             gcmd.respond_info("\n".join(stats))
 
-        if suggested_max_flow is None:
-            gcmd.respond_info("None of the measured extrusion moves have resulted in a vol. flow above %.2f%% of the requested flow, " \
-                              "perhaps you should calibrate the sensor e-steps or double-check your hardware?" % (cutoff, ))
+        if max_vflow_without_error is None:
+            gcmd.respond_info(f"Not enough data to calculate maximum volumetric flow.")
+            return
+
+        if first_error <= stop_vflow:
+            gcmd.respond_info(f"Not all measurements were completed. At {first_error}mm³/s or above, some measurements could not be taken. " \
+                              "This is likely the maximum possible volumetric flow with this combination of filament, nozzle, and temperature.")
+
+        poly = Polynomial({np.average(v): k for k, v in points.items()})
+        gcmd.respond_info(f"Polynomial curve: A={poly.A:.7f} B={poly.B:.7f}")
+
+        suggested_max_speed = None
+        for speed, measurements in reversed(points.items()):
+            error = max([abs((speed - measurement) / speed) for measurement in measurements])
+            if error < cutoff:
+                suggested_max_speed = speed
+                break
+
+        if suggested_max_speed is None:
+            gcmd.respond_info(f"None of the measured extrusion moves have resulted in less than {cutoff * 100}% deviation from requested speed, " \
+                              "perhaps calibrate the sensor e-steps or double-check your hardware?")
         else:
-            gcmd.respond_info("Suggested maximum volumetric flow for measured vol. flow above %.2f%% of expected value: %.2f" % (cutoff, suggested_max_flow, ))
+            suggested_max_flow = self.speed_to_volumetric_flow(suggested_max_speed)
+            gcmd.respond_info(f"Assuming no non-linear extrusion compensation, a maximum volumetric flow of {suggested_max_flow} is suggested " \
+                              f"which will keep E speed below {suggested_max_speed:.2f}mm/s and the deviation from requested speed within a margin of {cutoff * 100}%.")
+
+        if gcmd.get("SAVE_GRAPH") == "1":
+            datestr = time.strftime("%Y%m%d_%H%M%S")
+            fname = f"CALIBRATE_MAX_FLOW_measured_vs_expected_speed_{datestr}.png"
+
+            fig = plt.figure(figsize=(20, 12))
+            plt.plot(list(points.values()), list(points.keys()), "ro", markersize=2)
+            smooth_x=np.arange(0, max(points.keys()), .1)
+            plt.plot(smooth_x,np.polynomial.polynomial.polyval(smooth_x, poly.coefficients), label=f"Polynomial curve (A={poly.A:.7f} B={poly.B:.7f})")
+
+
+            poly_min = Polynomial({np.min(v): k for k, v in points.items()})
+            poly_max = Polynomial({np.max(v): k for k, v in points.items()})
+            ymin = np.polynomial.polynomial.polyval(smooth_x, poly_min.coefficients)
+            ymax = np.polynomial.polynomial.polyval(smooth_x, poly_max.coefficients)
+            plt.fill_between(smooth_x, ymin, ymax, alpha=0.2)
+
+            plt.title("Measured vs expected extrusion speed")
+            plt.xlabel("Measured speed")
+            plt.ylabel("Expected speed")
+            plt.legend(loc='lower right')
+            plt.show()
+            fig.savefig(fname)
+            plt.close(fig)
+
+            gcmd.respond_info(f"Saved {fname}")

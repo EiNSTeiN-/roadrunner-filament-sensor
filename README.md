@@ -81,7 +81,7 @@ invert_direction: False
 # If the measured distance/speed values are negative, change this to True.
 rotation_distance: 23.4
 # The length of filament which corresponds to a full 360 degree rotation
-# of the magnet over the hall rotary encoder. A good starting point is the
+# of the magnet over the rotary encoder. A good starting point is the
 # circumference of the BMG gears in the sensor.
 underextrusion_max_rate: 0.5
 # What rate of underextrusion can be tolerated, as a value between 0.0 and 1.0.
@@ -93,6 +93,11 @@ underextrusion_max_rate: 0.5
 underextrusion_period: 5
 # How long should the underextrusion rate stay above the max rate before
 # a runout is triggered.
+hysteresis_bits: 3
+# How many bits to ignore from the magnetic rotary encoder's angle data.
+# This setting determines the minimum detectable change in position
+# for the sensor. Configuring this too low can result in flapping between
+# two adjacent positions even when the filament is not moving.
 ```
 
 ### Usage
@@ -103,39 +108,50 @@ The first thing to do is to calibrate the `rotation_distance` for the sensor its
 with `CALIBRATE_FILAMENT_SENSOR_ROTATION_DISTANCE`:
 
 ```
-CALIBRATE_FILAMENT_SENSOR_ROTATION_DISTANCE SENSOR=roadrunner TEMP=210 LENGTH=10 SPEED=120 COUNT=10
+CALIBRATE_FILAMENT_SENSOR_ROTATION_DISTANCE SENSOR=roadrunner TEMP=250 LENGTH=10 SPEED=120 COUNT=10
 ```
 
 * `TEMP`: The temperature to heat up the extruder heater at. Default is 200.
-* `LENGTH`: The length of filament to extrude. Default is 25.
-* `SPEED`: The extrusion speed, in rotation per minute (e.g. 300 means 5mm/s). Default is 100.
-* `COUNT`: How many times to perform the test.
+* `LENGTH`: The length of filament to retract. Default is 25.
+* `SPEED`: The extrusion speed, in rotation per minute (e.g. 300 means 5mm/s). Default is 30 (0.50mm/s).
+* `COUNT`: How many times to perform the test. Default is 10.
 
-The macro will heat up the extruder heater to the specified temperature, extrude some filament,
-and print some stats. Make sure to specify a speed setting low enough to avoid overrunning your hotend, otherwise the rotation_distance will be wrong!
+The macro will heat up the extruder heater to the specified temperature, perform the test,
+and print some stats. The measurement is done while retracting the filament to avoid introducing an error
+due to the back-pressure in the nozzle. Make sure a length of filament at least `LENGTH` mm long can
+be retracted while still being gripped by the extruder gears. For best results, perform this test at low
+speed over a distance long enough for the sensor's gears can do one full rotation.
 
-Adjust the rotation distance until the reported range is acceptable for your setup, for example ±0.3mm seems like a good range for my own printer. While the sensor is high precision, its accuracy and repeatability over multiple readings can be affected by real world factors such as springiness in the PTFE tube, the attachement of the sensor to the body of the extruder, etc.
+After getting `COUNT` measurements, the measurement seen the most number of times is used to calculate
+a new `rotation_distance`. For example, if 8/10 measurements read 25.62mm when 25mm was expected, the `rotation_distance`
+was too high and a new value is automatically suggested. The variability between measurements is reported relative to the minimum
+detectable change in position. This is a good indicator for how repeatable the measurements are. While the sensor is
+high precision, its accuracy and repeatability over multiple readings can be affected by real world factors such as
+springiness in the PTFE tube, the attachement of the sensor to the body of the extruder, etc.
 
 ![Preview](images/example_rotation_distance.png)
 
 ##### Max flow calibration
 
-Before starting, make sure your configured `filament_diameter` is correctly configured.
+Before starting, make sure your extruder's configured `filament_diameter` is correctly configured, as well as the sensor's `rotation_distance`.
 
-You can determine the maximum volumetric flow for an extruder/nozzle/filament combination using the following command:
+You can determine the maximum volumetric flow for a combination of filament, nozzle and temperature using the following command:
 
 ```
-CALIBRATE_MAX_FLOW SENSOR=roadrunner TEMP=210 DURATION=5 START=2 STOP=25 STEP=1
+CALIBRATE_MAX_FLOW SENSOR=roadrunner TEMP=250 START=1 STOP=50 SAVE_GRAPH=1
 ```
 
 * `TEMP`: The temperature to heat up the extruder heater at. Default is 200.
-* `DURATION`: How long to extrude for during each test, used to determine the extrusion length (length = speed * duration). Default is 5 seconds.
+* `DURATION`: How long to extrude for during each test, used to determine the extrusion length (length = speed * duration). Default is 10 seconds.
 * `START`: The minimum volumetric flow to test. Default is 5.
 * `STOP`: The maximum volumetric flow to test. Default is 25.
 * `STEP`: The amount by which to increment the volumetric flow between each test. Default is 1.
-* `COUNT`: How many times to perform the test for each volumetric flow value. Default is 3.
-* `MIN_EXTRUSION_RATE`: The minimum percentage of measured flow that will be considered acceptable during the test. Used for recommending a maximum volumetric flow. Default is 98.
+* `COUNT`: How many times to perform the test for each volumetric flow value. Default is 5.
+* `MAX_SPEED_DEVIATION`: The percentage of deviation between the expected and the measured speed that will be considered acceptable. Used for recommending a maximum volumetric flow. Default is 0.05 (5%).
+* When the parameter `SAVE_GRAPH=1` is provided, a graph of all measurements is saved to klipper's current working directory (usually `~/klipper/`).
 
 ![Preview](images/example_max_flow.png)
 
-The output shows the expected extrusion (length, speed and flow) against what the sensor measured. In this example, we're extruding PLA at 200 degrees with a Revo Voron hotend, 0.60mm nozzle and Sherpa Mini extruder. The theoretical maximum flow rate for this hotend is around 11mm³/s, but the measured value can be different due to multiple factors such as the nozzle diameter and type material you're extruding. You can see in the example above, the experimental results very closely match the expectation for this hotend.
+This macro will warn when a given volumetric flow was so high that less than `COUNT` measurements were taken. This often corresponds to the physical limit of the extruder, where the back-pressure is so high that the extruder cannot keep up and eats into the filament.
+
+This macro will try to determine the highest volumetric flow at which the measured speed deviates from the requested speed by less than `MAX_SPEED_DEVIATION` percent. As extrusion speed increases, the pressure in the hotend also increases, and the volume of filament output by the nozzle will decrease. The relationship between speed and under-extrusion is not linear: the hotend can usually keep up at lower extrusion speeds and starts decreasing sharply with higher extrusion speed. There's currently no way to compensate for this effect in Klipper, which is why limiting the volumetric flow in your slicer to the zone where the hotend can keep up with the requested speed is a good idea. However, feel free to use values above the one suggested but below the point of stripping the filament, keeping in mind that areas printed at higher speeds may suffer from slight under-extrusion.
