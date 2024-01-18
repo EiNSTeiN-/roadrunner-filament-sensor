@@ -535,13 +535,14 @@ class HighResolutionFilamentSensorCalibration:
 
         if suggested_max_speed is None:
             return f"None of the measured extrusion moves have resulted in less than {cutoff * 100}% deviation from requested speed, " \
-                   "perhaps calibrate the sensor e-steps or double-check your hardware?"
+                   "perhaps calibrate the sensor e-steps or double-check your hardware?", None
         else:
             suggested_max_flow = self.speed_to_volumetric_flow(suggested_max_speed)
-            return f"Assuming no non-linear extrusion compensation, a conservative volumetric flow of {suggested_max_flow}mm³/s is suggested " \
+            info = f"Assuming no non-linear extrusion compensation, a conservative volumetric flow of {suggested_max_flow}mm³/s is suggested " \
                    f"which will keep E speed below {suggested_max_speed:.2f}mm/s and the deviation from requested speed within a margin of {cutoff * 100}%."
+            return info, suggested_max_flow
 
-    def _save_flow_graph(self, points, fname):
+    def _save_flow_graph(self, points, fname, conservative_max_flow, suggested_max_flow):
         fig = plt.figure(figsize=(20, 20))
         plt.plot(list(points.values()), list(points.keys()), "ro", markersize=2)
         smooth_x=np.arange(0, max(points.keys()), .1)
@@ -554,7 +555,10 @@ class HighResolutionFilamentSensorCalibration:
         poly_max = Polynomial.from_values({np.max(v): k for k, v in points.items()})
         plt.fill_between(smooth_x, poly_min.solve(smooth_x), poly_max.solve(smooth_x), alpha=0.2)
 
-        plt.title(f"Measured vs expected extrusion speed\nCompensation coefficients: {poly.coefficients!r}", loc='left')
+        plt.title(f"Measured vs expected extrusion speed\n" \
+                  f"Compensation coefficients: {poly.coefficients!s}\n" \
+                  f"Max flow without compensation: {conservative_max_flow:.2f}mm^3/s" \
+                  f"Max flow with compensation: {suggested_max_flow:.2f}mm^3/s", loc='left')
         plt.xlabel("Measured speed [mm/s]")
         plt.ylabel("Expected speed [mm/s]")
         plt.legend(loc='lower right')
@@ -594,7 +598,8 @@ class HighResolutionFilamentSensorCalibration:
                 f"Not all measurements were completed. Above {max_vflow_without_error}mm³/s, some measurements could not be taken. " \
                 f"This likely indicates the maximum possible volumetric flow with this combination of filament, nozzle, and temperature.")
 
-        gcmd.respond_info(self._conservative_speed_result(points, cutoff))
+        info, conservative_max_flow = self._conservative_speed_result(points, cutoff)
+        gcmd.respond_info(info)
 
         poly = Polynomial.from_values({np.average(v): k for k, v in points.items()})
         logging.info(f"Compensation coefficients: {poly.coefficients!s}")
@@ -613,5 +618,5 @@ class HighResolutionFilamentSensorCalibration:
         if gcmd.get("SAVE_GRAPH") == "1":
             datestr = time.strftime("%Y%m%d_%H%M%S")
             fname = f"CALIBRATE_MAX_FLOW_measured_vs_expected_speed_{datestr}.png"
-            self._save_flow_graph(points, fname)
+            self._save_flow_graph(points, fname, conservative_max_flow, suggested_max_flow)
             gcmd.respond_info(f"Saved {fname}")
