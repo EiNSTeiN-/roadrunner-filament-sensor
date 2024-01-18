@@ -119,7 +119,7 @@ G0 Z100
 QUERY_FILAMENT_SENSOR SENSOR=roadrunner
 
 # Find rotation_distance value, don't forget to save it in the sensor config & restart.
-CALIBRATE_FILAMENT_SENSOR_ROTATION_DISTANCE SENSOR=roadrunner TEMP=250 LENGTH=30 SPEED=120 COUNT=2
+CALIBRATE_FILAMENT_SENSOR_ROTATION_DISTANCE SENSOR=roadrunner TEMP=250 LENGTH=30 SPEED=30 COUNT=10
 
 # Find max flow for this extruder, save the graph of collected data for future reference (THIS WILL TAKE A WHILE)
 CALIBRATE_MAX_FLOW SENSOR=roadrunner TEMP=250 START=1 STOP=40 SAVE_GRAPH=1
