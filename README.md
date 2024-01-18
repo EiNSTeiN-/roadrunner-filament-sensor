@@ -187,7 +187,7 @@ Optionally if a graph is saved, the output will look like this:
 
 ##### Max flow calibration
 
-The goal of this macro is to help determine the maximum volumetric flow for a given combination of filament, nozzle and temperature. Before starting, make sure your extruder's configured `filament_diameter` is correctly configured, as well as the sensor's `rotation_distance`. For best results, the `STOP` value should be above or near the top of your extruder's expected maximum volumetric flow rate.
+The goal of this macro is to help determine the maximum volumetric flow for a given combination of filament, nozzle and temperature. Before starting, make sure your extruder's `filament_diameter` is correct, as well as the filament sensor's `rotation_distance`. For best results, the `STOP` value should be above or near the top of your extruder's expected maximum volumetric flow rate.
 
 ```
 CALIBRATE_MAX_FLOW SENSOR=roadrunner TEMP=250 START=1 STOP=50 SAVE_GRAPH=1
