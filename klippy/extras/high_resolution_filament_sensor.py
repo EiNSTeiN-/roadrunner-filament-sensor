@@ -6,6 +6,10 @@
 import struct
 import logging
 import typing
+import ast
+import serialhdl
+import numpy
+import math
 from . import bus, filament_switch_sensor, tmc_uart, high_resolution_filament_sensor_calibration as calibration
 
 DEFAULT_I2C_TARGET_ADDR = 0x40
@@ -224,10 +228,10 @@ class CommandedMove:
     def has_stopped_moving(self, duration=0.1) -> bool:
         if not (e := self.last_motion_eventtime):
             return False
-        diff = self.last_event.eventtime - e
-        if e == 0.0:
+        if self.last_event.distance != 0.:
             return False
-        return e > duration
+        diff = self.last_event.eventtime - e
+        return diff >= duration
 
     @property
     def duration(self) -> typing.Optional[float]:
@@ -296,6 +300,83 @@ class RunoutHelper(filament_switch_sensor.RunoutHelper):
     def cmd_QUERY_FILAMENT_SENSOR(self, gcmd):
         return self._sensor.cmd_QUERY_FILAMENT_SENSOR(gcmd)
 
+class NonLinearExtrusion:
+    def __init__(self, sensor):
+        self.sensor = sensor
+        self.printer = sensor.printer
+        self.gcode_move = None
+        self.toolhead = None
+
+        self.coefficients = None
+        self.enabled = False
+        self._next_transform = None
+
+        self.printer.register_event_handler('klippy:ready', self._handle_ready)
+
+    def set_next_transform(self, transform):
+        self._next_transform = transform
+        return
+
+    def set_enabled(self, enabled):
+        self.enabled = enabled
+
+    def set_coefficients(self, coefficients):
+        self.coefficients = coefficients
+
+    def _handle_ready(self):
+        self.gcode_move = self.printer.lookup_object('gcode_move')
+        self.toolhead = self.printer.lookup_object('toolhead')
+
+    def _compensated_speed(self, speed):
+        return float(numpy.polynomial.polynomial.polyval(speed, self.coefficients))
+
+    def _compensated_length(self, e_distance, speed, axes_distance=None):
+        if axes_distance:
+            move_duration = axes_distance / speed
+            e_speed = e_distance / move_duration
+        else:
+            move_duration = e_distance / speed
+            e_speed = speed
+
+        new_speed = self._compensated_speed(e_speed)
+        new_length = new_speed * move_duration
+        return new_length, new_speed
+
+    def _can_apply_compensation(self):
+        if self.coefficients is None or self.gcode_move is None or self.toolhead is None:
+            return False
+
+        if not self.enabled:
+            return False
+
+        if self.gcode_move.absolute_coord and self.gcode_move.absolute_extrude:
+            return False
+
+        if self.toolhead.get_extruder() is not self.sensor.extruder:
+            return False
+
+        return True
+
+    def move(self, newpos, speed):
+        if self._can_apply_compensation():
+            oldpos = self.toolhead.commanded_pos
+            axes_d = [newpos[i] - oldpos[i] for i in (0, 1, 2, 3)]
+            move_d = math.sqrt(sum([d*d for d in axes_d[:3]]))
+            extrude_only = (move_d < .000000001)
+
+            extrude_d = axes_d[3]
+            if extrude_d > 0:
+                new_length, new_speed = self._compensated_length(extrude_d, speed, axes_distance=(0 if extrude_only else move_d))
+
+                newpos[3] = oldpos[3] + new_length
+
+                if extrude_only:
+                    speed = new_speed
+        return self._next_transform.move(newpos, speed)
+
+    def get_position(self):
+        return self._next_transform.get_position()
+
 class HighResolutionFilamentSensor:
     """ A filament sensor from which we can get extremely accurate position readings. """
 
@@ -303,8 +384,10 @@ class HighResolutionFilamentSensor:
         self.name = config.get_name().split()[-1]
         self.printer = config.get_printer()
         self.gcode = self.printer.lookup_object('gcode')
+        self.gcode_move = self.printer.lookup_object('gcode_move')
         self.reactor = self.printer.get_reactor()
         self.runout_helper = RunoutHelper(config, self)
+        self.non_linear_transform = NonLinearExtrusion(self)
         self.estimated_print_time = None
 
         # Configuration
@@ -349,6 +432,41 @@ class HighResolutionFilamentSensor:
         self.printer.register_event_handler('toolhead:set_position', self._toolhead_set_position)
 
         calibration.HighResolutionFilamentSensorCalibration(self)
+
+        self.gcode.register_mux_command(
+            "ENABLE_NONLINEAR_EXTRUSION", "SENSOR", self.name,
+            self.cmd_ENABLE_NONLINEAR_EXTRUSION,
+            desc=self.cmd_ENABLE_NONLINEAR_EXTRUSION_help)
+
+    cmd_ENABLE_NONLINEAR_EXTRUSION_help = \
+        "Enable or disable non-linear extrusion compensation using " \
+        "the provided polynomial coefficients. Subsequent toolhead moves " \
+        "in the positive direction will be affected when relative " \
+        "extrusion distances are used."
+    def cmd_ENABLE_NONLINEAR_EXTRUSION(self, gcmd):
+        value = gcmd.get("COEFFICIENTS", None)
+        if value:
+            try:
+                coefs = ast.literal_eval(value)
+            except ValueError as e:
+                coefs = None
+            if coefs is None or type(coefs) not in (list, tuple):
+                gcmd.respond_raw("!! Coefficients must be a list of floats, not %s (check syntax?)\n" % (type(coefs).__name__, ))
+                return
+
+            logging.info("Setting non-linear extrusion coefficients: %s" % (repr(coefs), ))
+            self.non_linear_transform.set_coefficients(coefs)
+
+        enabled = gcmd.get_int("ENABLE", 1) == 1
+        if enabled and self.non_linear_transform.coefficients is None:
+            gcmd.respond_raw(f"!! Cannot enable non-linear extrusion without configuring coefficients.\n")
+            return
+
+        self.non_linear_transform.set_enabled(enabled)
+        if enabled:
+            gcmd.respond_info(f"Non-lienar extrusion enabled with coefficients {self.non_linear_transform.coefficients}.")
+        else:
+            gcmd.respond_info(f"Non-lienar extrusion disabled.")
 
     def cmd_QUERY_FILAMENT_SENSOR(self, gcmd):
         sensor_connected = "connected" if self._sensor_connected else "not connected"
@@ -476,8 +594,12 @@ class HighResolutionFilamentSensor:
             return val
 
     def i2c_read_reg(self, reg, length):
-        params = self.i2c.i2c_read([reg], length)
-        return bytearray(params['response'])
+        try:
+            params = self.i2c.i2c_read([reg], length)
+            return bytearray(params['response'])
+        except (serialhdl.error, self.printer.command_error) as e:
+            logging.warning(f"{self.name}: Unable to read: {e}")
+            return
 
     def _get_extruder_pos(self, eventtime=None):
         """ Find the estimated extruder position at the given eventtime. """
@@ -555,7 +677,7 @@ class HighResolutionFilamentSensor:
                 return
         else:
             data = self.i2c_read_reg(SensorRegister.ALL, 10)
-            if len(data) != 10:
+            if not data or len(data) != 10:
                 self._sensor_connected.set(False)
                 logging.warning("Update from sensor failed, expected 10 bytes but got %d: '%s'" % (len(data), data.hex(), ))
                 return
@@ -591,6 +713,10 @@ class HighResolutionFilamentSensor:
         self.extruder = self.printer.lookup_object(self.extruder_name)
         self.estimated_print_time = self.printer.lookup_object('mcu').estimated_print_time
         self.reactor.update_timer(self._sensor_update_timer, self.reactor.NOW)
+
+        # Register transform
+        old_transform = self.gcode_move.set_move_transform(self.non_linear_transform, force=True)
+        self.non_linear_transform.set_next_transform(old_transform)
 
     def _handle_printing(self, print_time):
         """ Callback when printing starts. """
