@@ -332,9 +332,12 @@ class NonLinearExtrusion:
 
     def _compensated_length(self, e_distance, speed, axes_distance=None):
         if axes_distance:
+            # printing move
+            speed = min(speed, self.toolhead.max_velocity)
             move_duration = axes_distance / speed
             e_speed = e_distance / move_duration
         else:
+            # extrude-only move
             move_duration = e_distance / speed
             e_speed = speed
 
