@@ -381,7 +381,7 @@ class HighResolutionFilamentSensorCalibration:
             self._collect_calibration_data(gcmd, run)
 
             if len(run) == 0:
-                gcmd.respond_info("!! No data collected.\n")
+                gcmd.respond_raw("!! No data collected.\n")
                 return
 
             for index, data in enumerate(run.datum):
@@ -397,7 +397,7 @@ class HighResolutionFilamentSensorCalibration:
 
             datestr = time.strftime("%Y%m%d_%H%M%S")
             for index, data in enumerate(run.datum):
-                if data.timeline and gcmd.get("SAVE_GRAPH") == "1":
+                if data.timeline and gcmd.get("SAVE_GRAPH", None) == "1":
                     fname = f"FILAMENT_SENSOR_MEASURE_timeline_{index + 1}_{datestr}.png"
                     self._save_timeline_graph(data.timeline, fname)
                     gcmd.respond_info(f"Saved {fname}")
@@ -615,7 +615,7 @@ class HighResolutionFilamentSensorCalibration:
             f"which will keep E speed below {suggested_max_speed:.2f}mm/s (which corresponds to {suggested_max_speed_after_compensation:.2f}mm/s after compensation). " \
             f"If the extruder is unable to reliably sustain this speed, lowering the max volumetric flow further is recommended.")
 
-        if gcmd.get("SAVE_GRAPH") == "1":
+        if gcmd.get("SAVE_GRAPH", None) == "1":
             datestr = time.strftime("%Y%m%d_%H%M%S")
             fname = f"CALIBRATE_MAX_FLOW_measured_vs_expected_speed_{datestr}.png"
             self._save_flow_graph(points, fname, conservative_max_flow, suggested_max_flow)

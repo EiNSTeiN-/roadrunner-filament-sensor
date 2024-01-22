@@ -310,6 +310,7 @@ class NonLinearExtrusion:
         self.coefficients = None
         self.enabled = False
         self._next_transform = None
+        self._logging = False
 
         self.printer.register_event_handler('klippy:ready', self._handle_ready)
 
@@ -328,7 +329,10 @@ class NonLinearExtrusion:
         self.toolhead = self.printer.lookup_object('toolhead')
 
     def _compensated_speed(self, speed):
-        return float(numpy.polynomial.polynomial.polyval(speed, self.coefficients))
+        if speed == 0.:
+            return speed
+        new_speed = float(numpy.polynomial.polynomial.polyval(speed, self.coefficients))
+        return max(new_speed, speed)
 
     def _compensated_length(self, e_distance, speed, axes_distance=None):
         if axes_distance:
@@ -343,6 +347,10 @@ class NonLinearExtrusion:
 
         new_speed = self._compensated_speed(e_speed)
         new_length = new_speed * move_duration
+
+        if self._logging:
+            logging.info(f"compensation for move distance [axes={axes_distance:.4f}mm,E={e_distance:.4f}mm] (new={new_length:.2f}mm) at speed={speed:.2f}mm/s. "\
+                        f"extrude speed={e_speed:.2f}mm/s (new={new_speed:.2f}mm/s), duration={move_duration:.4f}s.")
         return new_length, new_speed
 
     def _can_apply_compensation(self):
@@ -364,12 +372,15 @@ class NonLinearExtrusion:
         if self._can_apply_compensation():
             oldpos = self.toolhead.commanded_pos
             axes_d = [newpos[i] - oldpos[i] for i in (0, 1, 2, 3)]
-            move_d = math.sqrt(sum([d*d for d in axes_d[:3]]))
+            move_d = math.sqrt(sum([d*d for d in axes_d[:2]]))
             extrude_only = (move_d < .000000001)
 
             extrude_d = axes_d[3]
-            if extrude_d > 0:
+            if extrude_d > 0.:
                 new_length, new_speed = self._compensated_length(extrude_d, speed, axes_distance=(0 if extrude_only else move_d))
+
+                if self._logging:
+                    logging.info(f"applying compensation for {'extrude only' if extrude_only else 'printing'} move from {oldpos} to {newpos}.")
 
                 newpos[3] = oldpos[3] + new_length
 
@@ -386,6 +397,7 @@ class HighResolutionFilamentSensor:
     def __init__(self, config):
         self.name = config.get_name().split()[-1]
         self.printer = config.get_printer()
+        self.printer.register_event_handler('klippy:ready', self._handle_ready)
         self.gcode = self.printer.lookup_object('gcode')
         self.gcode_move = self.printer.lookup_object('gcode_move')
         self.reactor = self.printer.get_reactor()
@@ -414,6 +426,7 @@ class HighResolutionFilamentSensor:
         self._capture_history : bool = False
         self.position = 0.0
         self._is_printing = False
+        self._is_homing = False
         self._unhealthy = TriggerOnChange(False, self._unhealthy_changed)
         self._runout = TriggerOnChange(False, self._runout_changed)
         self._underextrusion_start_time = None
@@ -428,11 +441,12 @@ class HighResolutionFilamentSensor:
         self._rotation_helper = SensorRotationHelper(12, self.hysteresis_bits) # 12 bits of precision, with configured hysteresis
 
         self._sensor_update_timer = self.reactor.register_timer(self._sensor_update_event)
-        self.printer.register_event_handler('klippy:ready', self._handle_ready)
         self.printer.register_event_handler('idle_timeout:printing', self._handle_printing)
         self.printer.register_event_handler('idle_timeout:ready', self._handle_not_printing)
         self.printer.register_event_handler('idle_timeout:idle', self._handle_not_printing)
         self.printer.register_event_handler('toolhead:set_position', self._toolhead_set_position)
+        self.printer.register_event_handler('homing:homing_move_begin', self._handle_homing_begin)
+        self.printer.register_event_handler('homing:homing_move_end', self._handle_homing_end)
 
         calibration.HighResolutionFilamentSensorCalibration(self)
 
@@ -682,7 +696,11 @@ class HighResolutionFilamentSensor:
             data = self.i2c_read_reg(SensorRegister.ALL, 10)
             if not data or len(data) != 10:
                 self._sensor_connected.set(False)
-                logging.warning("Update from sensor failed, expected 10 bytes but got %d: '%s'" % (len(data), data.hex(), ))
+                if data:
+                    error = "expected 10 bytes but got %d: '%s'" % (len(data), data.hex(), )
+                else:
+                    error = "communication error"
+                logging.warning(f"Update from sensor failed: {error}")
                 return
 
             magnet_state, filament_presence, full_turns, angle = struct.unpack('<BBll', data)
@@ -720,6 +738,14 @@ class HighResolutionFilamentSensor:
         # Register transform
         old_transform = self.gcode_move.set_move_transform(self.non_linear_transform, force=True)
         self.non_linear_transform.set_next_transform(old_transform)
+
+    def _handle_homing_begin(self, hmove):
+        self._is_homing = True
+        logging.info("[%s] homing begin (no sensor update)" % (self.__class__.__name__, ))
+
+    def _handle_homing_end(self, hmove):
+        self._is_homing = False
+        logging.info("[%s] homing end (sensor update resumed)" % (self.__class__.__name__, ))
 
     def _handle_printing(self, print_time):
         """ Callback when printing starts. """
@@ -829,7 +855,7 @@ class HighResolutionFilamentSensor:
         if new_value:
             self._respond_error("Detected underextrusion for over %.2fs" %
                                 (self.underextrusion_period, ))
-        else:
+        elif self._underextrusion_start_time:
             self._respond_info("Underextrusion cleared after %.2fs" %
                                     (self.reactor.monotonic() - self._underextrusion_start_time))
 
@@ -858,11 +884,13 @@ class HighResolutionFilamentSensor:
 
     def _sensor_update_event(self, eventtime):
         """ Periodic timer to fetch sensor data and update internal state. """
-        self._update_state_from_sensor()
-        self._status_evaluation_move = self._combine_moves_for_distance(self.move_evaluation_distance)
 
-        if eventtime >= self.runout_helper.min_event_systime and self.runout_helper.sensor_enabled:
-            self._check_print_issues(eventtime)
+        if not self._is_homing:
+            self._update_state_from_sensor()
+            self._status_evaluation_move = self._combine_moves_for_distance(self.move_evaluation_distance)
+
+            if eventtime >= self.runout_helper.min_event_systime and self.runout_helper.sensor_enabled:
+                self._check_print_issues(eventtime)
 
         return eventtime + CHECK_RUNOUT_TIMEOUT
 
