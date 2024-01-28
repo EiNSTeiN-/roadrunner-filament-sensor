@@ -10,6 +10,7 @@ import ast
 import serialhdl
 import numpy
 import math
+import serial
 from . import bus, filament_switch_sensor, tmc_uart, high_resolution_filament_sensor_calibration as calibration
 
 DEFAULT_I2C_TARGET_ADDR = 0x40
@@ -47,6 +48,16 @@ class SensorRegister:
     FILAMENT_PRESENCE = 0x22
     FULL_TURNS = 0x23
     ANGLE = 0x24
+
+    def __init__(self, magnet_state, filament_presence, full_turns, angle):
+        self.magnet_state = magnet_state
+        self.filament_presence = filament_presence
+        self.full_turns = full_turns
+        self.angle = angle
+        self.connected = not (magnet_state is None or
+                                filament_presence is None or
+                                full_turns is None or
+                                angle is None)
 
 class SensorEvent:
     """ A point-in-time reading from the sensor, which holds calculated
@@ -108,6 +119,97 @@ class SensorUART(tmc_uart.MCU_TMC_uart_bitbang):
         read_length = (((4 + reg_length) * 10) + 7) // 8
         params = self.tmcuart_send_cmd.send([self.oid, msg, read_length])
         return self._decode_read(reg, params['read'])
+
+class RegisterReaderGeneric:
+    def __init__(self): pass
+    def read(self) -> SensorRegister: raise NotImplementedError('must be implemented in subclass')
+
+class RegisterReaderUART(RegisterReaderGeneric):
+    def __init__(self, uart):
+        self.uart = uart
+
+    def read(self):
+        magnet_state = self.uart_read_reg1(SensorRegister.MAGNET_STATE)
+        filament_presence = self.uart_read_reg1(SensorRegister.FILAMENT_PRESENCE)
+        full_turns = self.uart_read_reg4(SensorRegister.FULL_TURNS)
+        angle = self.uart_read_reg4(SensorRegister.ANGLE)
+
+        return SensorRegister(magnet_state, filament_presence, full_turns, angle)
+
+    def uart_read_reg(self, reg, length, retries=5):
+        for _ in range(retries):
+            response = self.uart.reg_read(None, 0, reg, length)
+            if response:
+                break
+        if response is None:
+            logging.warning("Error reading from uart, no response received or CRC was invalid.")
+        else:
+            return response
+
+    def uart_read_reg4(self, reg):
+        if data := self.uart_read_reg(reg, 4):
+            val, = struct.unpack('<l', data)
+            return val
+
+    def uart_read_reg1(self, reg):
+        if data := self.uart_read_reg(reg, 1):
+            val, = struct.unpack('<B', data)
+            return val
+
+class RegisterReaderI2C(RegisterReaderGeneric):
+    def __init__(self, i2c):
+        self.i2c = i2c
+        self.printer = i2c.mcu.get_printer()
+
+    def read(self):
+        data = self.i2c_read_reg(SensorRegister.ALL, 10)
+        if not data or len(data) != 10:
+            if data:
+                error = "expected 10 bytes but got %d: '%s'" % (len(data), data.hex(), )
+            else:
+                error = "communication error"
+            logging.warning(f"Reading from sensor failed: {error}")
+            return
+
+        magnet_state, filament_presence, full_turns, angle = struct.unpack('<BBll', data)
+        if magnet_state == 0xff:
+            return
+
+        return SensorRegister(magnet_state, filament_presence, full_turns, angle)
+
+    def i2c_read_reg(self, reg, length):
+        try:
+            params = self.i2c.i2c_read([reg], length)
+            return bytearray(params['response'])
+        except (serialhdl.error, self.printer.command_error) as e:
+            logging.warning(f"{self.name}: Unable to read: {e}")
+            return
+
+class RegisterReaderSerial(RegisterReaderGeneric):
+    def __init__(self, serial : serial.Serial):
+        self.serial = serial
+
+    def read(self):
+        try:
+            self.serial.write(bytearray([0xf5, SensorRegister.ALL]))
+            data = self.serial.read(10)
+        except serial.SerialException:
+            logging.error("Unable to communicate with sensor")
+            return
+
+        if not data or len(data) != 10:
+            if data:
+                error = "expected 10 bytes but got %d: '%s'" % (len(data), data.hex(), )
+            else:
+                error = "communication error"
+            logging.warning(f"Reading from sensor failed: {error}")
+            return
+
+        magnet_state, filament_presence, full_turns, angle = struct.unpack('<BBll', data)
+        if magnet_state == 0xff:
+            return
+
+        return SensorRegister(magnet_state, filament_presence, full_turns, angle)
 
 class SensorRotationHelper:
     """ Helper class used to convert raw point-in-time readings from the sensor
@@ -397,6 +499,7 @@ class HighResolutionFilamentSensor:
     def __init__(self, config):
         self.name = config.get_name().split()[-1]
         self.printer = config.get_printer()
+        self.printer.register_event_handler('klippy:connect', self._handle_connect)
         self.printer.register_event_handler('klippy:ready', self._handle_ready)
         self.gcode = self.printer.lookup_object('gcode')
         self.gcode_move = self.printer.lookup_object('gcode_move')
@@ -406,12 +509,15 @@ class HighResolutionFilamentSensor:
         self.estimated_print_time = None
 
         # Configuration
-        self.uart = self._lookup_uart_bitbang(config)
-        if self.uart:
-            self.mcu = self.uart.mcu
+        self.serial_port = config.get("serial", None)
+        self.regs : typing.Optional[RegisterReaderGeneric] = None
+        if self.serial_port:
+            self.baud = config.getint("baud", default=115200)
+        elif uart := self._lookup_uart_bitbang(config):
+            self.regs = RegisterReaderUART(uart)
         else:
-            self.i2c = bus.MCU_I2C_from_config(config, DEFAULT_I2C_TARGET_ADDR, DEFAULT_I2C_SPEED)
-            self.mcu = self.i2c.mcu
+            i2c = bus.MCU_I2C_from_config(config, DEFAULT_I2C_TARGET_ADDR, DEFAULT_I2C_SPEED)
+            self.regs = RegisterReaderI2C(i2c)
 
         self.extruder_name = config.get('extruder')
         self.invert_direction = config.getboolean('invert_direction', False)
@@ -499,6 +605,15 @@ class HighResolutionFilamentSensor:
         msg += f"- smallest detectable angular change: {self.detectable_angle_change()} degree\n"
         msg += f"- smallest detectable movement: {self.detectable_distance_change()} mm\n"
         gcmd.respond_info(msg)
+
+    def _handle_connect(self):
+        """ Connect the serial port, if necessary. """
+        try:
+            if self.serial_port:
+                ser = serial.Serial(self.serial_port, self.baud, timeout=0, write_timeout=0)
+                self.regs = RegisterReaderSerial(ser)
+        except serial.SerialException:
+            raise self.printer.config_error(f"{self.name}: Could not connect to {self.serial_port}")
 
     def detectable_angle_change(self):
         return self._rotation_helper.angular_resolution
@@ -590,34 +705,6 @@ class HighResolutionFilamentSensor:
             "position": self.position,
         }
 
-    def uart_read_reg(self, reg, length, retries=5):
-        for _ in range(retries):
-            response = self.uart.reg_read(None, 0, reg, length)
-            if response:
-                break
-        if response is None:
-            logging.warning("Error reading from uart, no response received or CRC was invalid.")
-        else:
-            return response
-
-    def uart_read_reg4(self, reg):
-        if data := self.uart_read_reg(reg, 4):
-            val, = struct.unpack('<l', data)
-            return val
-
-    def uart_read_reg1(self, reg):
-        if data := self.uart_read_reg(reg, 1):
-            val, = struct.unpack('<B', data)
-            return val
-
-    def i2c_read_reg(self, reg, length):
-        try:
-            params = self.i2c.i2c_read([reg], length)
-            return bytearray(params['response'])
-        except (serialhdl.error, self.printer.command_error) as e:
-            logging.warning(f"{self.name}: Unable to read: {e}")
-            return
-
     def _get_extruder_pos(self, eventtime=None):
         """ Find the estimated extruder position at the given eventtime. """
 
@@ -679,40 +766,15 @@ class HighResolutionFilamentSensor:
         eventtime = self.reactor.monotonic()
         self._inspect_commanded_move(eventtime)
 
-        if self.uart:
-            magnet_state = self.uart_read_reg1(SensorRegister.MAGNET_STATE)
-            filament_presence = self.uart_read_reg1(SensorRegister.FILAMENT_PRESENCE)
-            full_turns = self.uart_read_reg4(SensorRegister.FULL_TURNS)
-            angle = self.uart_read_reg4(SensorRegister.ANGLE)
+        regs = self.regs.read()
+        self._sensor_connected.set(regs and regs.connected)
+        if not self._sensor_connected:
+            return
 
-            self._sensor_connected.set(not (magnet_state is None or
-                                          filament_presence is None or
-                                          full_turns is None or
-                                          angle is None))
+        self._magnet_state = MagnetState(regs.magnet_state)
+        self._filament_present.set(regs.filament_presence == 1)
 
-            if not self._sensor_connected:
-                return
-        else:
-            data = self.i2c_read_reg(SensorRegister.ALL, 10)
-            if not data or len(data) != 10:
-                self._sensor_connected.set(False)
-                if data:
-                    error = "expected 10 bytes but got %d: '%s'" % (len(data), data.hex(), )
-                else:
-                    error = "communication error"
-                logging.warning(f"Update from sensor failed: {error}")
-                return
-
-            magnet_state, filament_presence, full_turns, angle = struct.unpack('<BBll', data)
-
-            self._sensor_connected.set(magnet_state != 0xff)
-            if not self._sensor_connected:
-                return
-
-        self._magnet_state = MagnetState(magnet_state)
-        self._filament_present.set(filament_presence == 1)
-
-        self._rotation_helper.update_raw(full_turns, angle)
+        self._rotation_helper.update_raw(regs.full_turns, regs.angle)
 
         inv = (-1 if self.invert_direction else 1)
         new_position = self.rotation_distance * (self._rotation_helper.absolute_angular_position() * inv) / 360.
