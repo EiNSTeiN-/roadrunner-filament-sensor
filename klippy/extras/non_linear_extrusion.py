@@ -1,3 +1,8 @@
+# Non Linear Extrusion Compensation
+#
+# Copyright (C) 2024 Francois Chagnon <fc@francoischagnon.net>
+#
+# This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
 import ast
 import numpy
