@@ -17,9 +17,10 @@
 #include "ir_sensor.h"
 #include "tmcuart.h"
 #include "i2c_target.h"
+#include "usbserial.h"
 
-/* leave commented for UART communication with the printer, uncomment for I2C */
-//#define IS_I2C_TARGET 1
+//#define IS_I2C_TARGET 1 // uncomment for i2c communication with printer
+//#define USB_SERIAL_COMMS 1 // uncomment for serial over usb communication with printer
 
 #define READ_ALL                    0x10
 // #define READ_HEALTH                 0x20
@@ -181,6 +182,8 @@ int main() {
 
 #if defined(IS_I2C_TARGET) && IS_I2C_TARGET
     i2c_target_init();
+#elif defined(USB_SERIAL_COMMS) && USB_SERIAL_COMMS
+    usbserial_init();
 #else
     tmcuart_init();
 #endif
@@ -192,7 +195,7 @@ int main() {
     as5600_get_max_position(&max);
     as5600_get_max_angle(&mang);
     printf("AS5600 min position: %u max position: %u, max angle: %u\n", min, max, mang);
-    
+
     printf("Entering main loop...\n");
     neopixel_solid(OFF);
 
@@ -209,7 +212,9 @@ int main() {
 
         neopixel_loop();
 
-#if !defined(IS_I2C_TARGET) || !IS_I2C_TARGET
+#if defined(USB_SERIAL_COMMS) && USB_SERIAL_COMMS
+        usbserial_loop();
+#elif !defined(IS_I2C_TARGET) || !IS_I2C_TARGET
         tmcuart_loop();
 #endif
     }

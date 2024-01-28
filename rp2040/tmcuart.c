@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 
 #include "pico/stdlib.h"
 #include "hardware/pio.h"
@@ -71,7 +72,7 @@ static void tmcuart_send_response(uint8_t reg)
     uint8_t data[255];
     size_t length = 0;
 
-    memset(&data, 0, sizeof(data));
+    memset((void *)&data, 0, sizeof(data));
     data[0] = 0x05;
     data[1] = 0xff;
     data[2] = reg;
@@ -96,7 +97,7 @@ void tmcuart_loop()
 
     if (!tmcuart_sync())
         return;
-        
+
     tmcuart_read(&cmd[1], 3);
 
     addr = cmd[1];

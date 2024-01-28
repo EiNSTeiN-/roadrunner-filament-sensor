@@ -189,6 +189,13 @@ class RegisterReaderSerial(RegisterReaderGeneric):
     def read(self):
         try:
             self.serial.write(bytearray([0xf5, SensorRegister.ALL]))
+
+            while self.serial.read(1) != '\x05' and self.serial.read(1) != '\xff':
+                pass
+
+            if self.serial.read(1) != chr(SensorRegister.ALL):
+                return
+
             data = self.serial.read(10)
         except serial.SerialException:
             logging.error("Unable to communicate with sensor")
@@ -479,7 +486,7 @@ class HighResolutionFilamentSensor:
         """ Connect the serial port, if necessary. """
         try:
             if self.serial_port:
-                ser = serial.Serial(self.serial_port, self.baud, timeout=0, write_timeout=0)
+                ser = serial.Serial(self.serial_port, self.baud, timeout=0.05, write_timeout=0)
                 self.regs = RegisterReaderSerial(ser)
         except serial.SerialException:
             raise self.printer.config_error(f"{self.name}: Could not connect to {self.serial_port}")

@@ -25,7 +25,7 @@ cmake ..
 make
 ```
 
-You'll find multiple `.uf2` files in the `roadrunner-filament-sensor/rp2040/build` directory. The name contains `uart` or `i2c` for the communication mode between mcu and sensor, and `rgb` vs `grb` for the neopixel type.
+You'll find multiple `.uf2` files in the `roadrunner-filament-sensor/rp2040/build` directory. The name contains `uart`, `i2c` or `usbserial` for the communication mode between mcu and sensor, and `rgb` vs `grb` for the neopixel type.
 
 ### Flashing
 
