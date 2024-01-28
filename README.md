@@ -70,8 +70,6 @@ uart_tx_pin: P0.1
 #  The mcu on which the sensor is connected.
 #i2c_bus: i2c1
 #  The I2C bus to which the sensor is connected on the mcu.
-#i2c_timeout: 30000
-#  The time after which an I2C timeout error is thrown.
 pause_on_runout: False
 #  Whether or not to pause the print automatically when a runout
 #  condition is triggered.
