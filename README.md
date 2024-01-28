@@ -214,10 +214,18 @@ Optionally if a graph is saved, the output will look like this:
 
 ##### Enable non-linear extrusion compensation (EXPERIMENTAL)
 
+A `[non_linear_extrusion]` config section must be added for this command to work with a given extruder:
+```
+[non_linear_extrusion t0]
+extruder: extruder
+# Name of the extruder for which nonlinear extrusion compensation can optionally
+# be enabled.
+```
+
 When non-linear extrusion compensation is enabled, the increase in pressure in the extruder will be compensated by increasing the requested speed of G1 commands. This applies to both extrude-only moves as well as regular printing moves. The compensation is only applied when using relative coordinates and only when a positive E distance is specified since retraction moves are not affected by pressure in the nozzle.
 
 ```
-ENABLE_NONLINEAR_EXTRUSION SENSOR=roadrunner ENABLE=1 COEFFICIENTS=-0.1106867,1.1197162,-0.0347608,0.0028625
+ENABLE_NONLINEAR_EXTRUSION EXTRUDER=extruder ENABLE=1 COEFFICIENTS=-0.1106867,1.1197162,-0.0347608,0.0028625
 ```
 
 * `ENABLE`: 1 to enable, 0 to disable
