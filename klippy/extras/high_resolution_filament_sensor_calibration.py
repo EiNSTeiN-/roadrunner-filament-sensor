@@ -283,7 +283,7 @@ class HighResolutionFilamentSensorCalibration:
             return False
         return True
 
-    def _collect_calibration_data(self, gcmd, run, max_attempts=3, revert_position=False):
+    def _collect_calibration_data(self, gcmd, run : CalibrationRun, max_attempts=3, revert_position=False):
         index = 0
         attempt = 0
 
@@ -307,8 +307,7 @@ class HighResolutionFilamentSensorCalibration:
                 self.sensor.capture_history(False)
 
             move = self.sensor.get_combined_moves()
-
-            if not move.measured_distance or move.duration is None:
+            if not move or not move.measured_distance or move.duration is None:
                 run.remove(data)
                 gcmd.respond_raw(f"!! No movement detected\n")
                 break
