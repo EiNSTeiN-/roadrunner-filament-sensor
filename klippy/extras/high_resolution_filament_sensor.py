@@ -419,8 +419,6 @@ class VirtualButtonWrapper:
 
     def setup_buttons(self, pin_params_list, callback):
         for pin_params in pin_params_list:
-            logging.info(f"{self.__class__.__name__} pin_params={pin_params} callback={callback}")
-
             sensor_name = pin_params['pin']
             if sensor_name not in self.sensors:
                 raise self.printer.config_error(
