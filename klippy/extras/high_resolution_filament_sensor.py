@@ -15,6 +15,9 @@ DEFAULT_I2C_SPEED = 100000
 
 CHECK_RUNOUT_TIMEOUT = .100 # read sensor value at this interval
 
+VIRTUAL_MOTION_PREFIX = 'virtual_motion_sensor'
+VIRTUAL_SWITCH_PREFIX = 'virtual_switch_sensor'
+
 class MagnetState:
     """" State of the rotary magnet encoder inside the sensor. """
     NOT_DETECTED = 1
@@ -387,16 +390,54 @@ class TriggerOnChange:
 
     def __init__(self, value : typing.Optional[bool], fn):
         self._value : bool = value
+        self._changed_time = None
         self._fn = fn
 
-    def set(self, value : bool):
+    def set(self, value : bool, eventtime: float):
         if value is not self._value:
-            self._fn(self._value, value)
+            self._fn(self._value, value, eventtime)
+            self._changed_time = eventtime
         self._value = value
 
     def __bool__(self):
         return self._value
     __nonzero__=__bool__
+
+class VirtualButtonWrapper:
+    def __init__(self, printer):
+        self.printer = printer
+        self.sensors = {}
+
+        # wrapper requirements
+        self.pin_list = []
+
+    def register_sensor(self, sensor):
+        self.sensors[sensor.name] = sensor
+
+    def register_callback(self, sensor, cb):
+        raise NotImplementedError('must be implemented in subclass')
+
+    def setup_buttons(self, pin_params_list, callback):
+        for pin_params in pin_params_list:
+            logging.info(f"{self.__class__.__name__} pin_params={pin_params} callback={callback}")
+
+            sensor_name = pin_params['pin']
+            if sensor_name not in self.sensors:
+                raise self.printer.config_error(
+                        "%s not a high_resolution_filament_sensor object")
+
+            self.pin_list.append(pin_params)
+
+            sensor = self.sensors[sensor_name]
+            self.register_callback(sensor, callback)
+
+class VirtualMotionWrapper(VirtualButtonWrapper):
+    def register_callback(self, sensor, cb):
+        sensor.register_motion_callback(cb)
+
+class VirtualSwitchWrapper(VirtualButtonWrapper):
+    def register_callback(self, sensor, cb):
+        sensor.register_switch_callback(cb)
 
 class RunoutHelper(filament_switch_sensor.RunoutHelper):
     def __init__(self, config, sensor):
@@ -413,6 +454,7 @@ class HighResolutionFilamentSensor:
         self.name = config.get_name().split()[-1]
         self.printer = config.get_printer()
         self.gcode = self.printer.lookup_object('gcode')
+        self.buttons = self.printer.lookup_object('buttons')
         self.reactor = self.printer.get_reactor()
         self.runout_helper = RunoutHelper(config, self)
         self.estimated_print_time = None
@@ -448,6 +490,13 @@ class HighResolutionFilamentSensor:
         self._underextruding = TriggerOnChange(False, self._underextruding_changed)
         self._last_epos = 0.0
         self._status_evaluation_move = None
+
+        # virtual pins for native klipper module compatibility
+        self._motion_callbacks = []
+        self._motion_callback_state = True
+        self._switch_callbacks = []
+        self.setup_buttons(VIRTUAL_MOTION_PREFIX, VirtualMotionWrapper)
+        self.setup_buttons(VIRTUAL_SWITCH_PREFIX, VirtualSwitchWrapper)
 
         # Internal sensor state
         self._magnet_state = MagnetState(0xff)
@@ -491,6 +540,22 @@ class HighResolutionFilamentSensor:
         except serial.SerialException:
             raise self.printer.config_error(f"{self.name}: Could not connect to {self.serial_port}")
 
+    def setup_buttons(self, prefix, klass):
+        """ Register virtual buttons for use with filament_motion_sensor and filament_switch_sensor. """
+        wrapper = self.buttons.mcu_buttons.get(prefix)
+        if wrapper is None:
+            self.buttons.mcu_buttons[prefix] = wrapper = klass(self.printer)
+
+            ppins = self.printer.lookup_object('pins')
+            ppins.register_chip(prefix, self)
+        wrapper.register_sensor(self)
+
+    def register_motion_callback(self, cb):
+        self._motion_callbacks.append(cb)
+
+    def register_switch_callback(self, cb):
+        self._switch_callbacks.append(cb)
+
     def detectable_angle_change(self):
         return self._rotation_helper.angular_resolution
 
@@ -522,7 +587,7 @@ class HighResolutionFilamentSensor:
         The rate is returned as a value from 0.0 to 1.0, with 0.0 meaning
         the measured rate matches the expected rate and 1.0 meaning
         no extrusion was detected at all but some was expected. """
-        return min(1, max(-1, 1. - move.extrusion_rate)) if move else 0.0
+        return min(1., max(-1., 1. - move.extrusion_rate)) if move else 0.0
 
     def _combine_moves(self, newer : CommandedMove, older : CommandedMove) -> CommandedMove:
         move = CommandedMove(older.eventtime, older.pos, older.last_epos, newer.epos)
@@ -616,7 +681,7 @@ class HighResolutionFilamentSensor:
         while len(self._commanded_moves) > 100:
             self._commanded_moves.pop()
 
-    def _sensor_connected_changed(self, old_value, new_value):
+    def _sensor_connected_changed(self, old_value, new_value, eventtime):
         logging.info(f"{self.name}: 'sensor_connected' changed from {old_value} to {new_value}")
 
         if old_value is None:
@@ -626,7 +691,7 @@ class HighResolutionFilamentSensor:
         else:
             self._respond_error("No longer connected or data cannot be read")
 
-    def _filament_present_changed(self, old_value, new_value):
+    def _filament_present_changed(self, old_value, new_value, eventtime):
         logging.info(f"{self.name}: 'filament_present' changed from {old_value} to {new_value}")
 
         if old_value is None:
@@ -635,6 +700,8 @@ class HighResolutionFilamentSensor:
             self._respond_info("Filament present")
         else:
             self._respond_error("Filament not present")
+        for cb in self._switch_callbacks:
+            cb(eventtime, new_value)
 
     def _update_state_from_sensor(self):
         """ Read data from sensor and sets the internal state to match. """
@@ -643,12 +710,12 @@ class HighResolutionFilamentSensor:
         self._inspect_commanded_move(eventtime)
 
         regs = self.regs.read()
-        self._sensor_connected.set(regs and regs.connected)
+        self._sensor_connected.set(regs and regs.connected, eventtime)
         if not self._sensor_connected:
             return
 
         self._magnet_state = MagnetState(regs.magnet_state)
-        self._filament_present.set(regs.filament_presence == 1)
+        self._filament_present.set(regs.filament_presence == 1, eventtime)
 
         self._rotation_helper.update_raw(regs.full_turns, regs.angle)
 
@@ -656,6 +723,12 @@ class HighResolutionFilamentSensor:
         new_position = self.rotation_distance * (self._rotation_helper.absolute_angular_position() * inv) / 360.
         distance = new_position - self.position
         self.position = new_position
+
+        if distance > 0.:
+            # If we moved by any nonzero amount since previous measurement, toggle state and trigger callbacks
+            self._motion_callback_state = not self._motion_callback_state
+            for cb in self._motion_callbacks:
+                cb(eventtime, self._motion_callback_state)
 
         if len(self._commanded_moves) > 0:
             move = self._commanded_moves[0]
@@ -685,9 +758,9 @@ class HighResolutionFilamentSensor:
         """ Callback when printing starts. """
 
         logging.info("[%s] printing" % (self.__class__.__name__, ))
-        self._runout.set(False)
+        self._runout.set(False, print_time)
         self._underextrusion_start_time = None
-        self._underextruding.set(False)
+        self._underextruding.set(False, print_time)
         self._is_printing = True
         self.clear_move_queue()
         self._status_evaluation_move = None
@@ -745,7 +818,7 @@ class HighResolutionFilamentSensor:
             return "magnet %s" % (str(self._magnet_state), )
         return "unknown reason"
 
-    def _is_runout_condition(self):
+    def _is_runout_condition(self, eventtime):
         """ Checks whether there is a runout condition, either immediately when
         the filament is not detected, or after the configured period of time when
         underextruding. """
@@ -761,15 +834,15 @@ class HighResolutionFilamentSensor:
                 #                     (rate * 100, self._underextrusion_start_time))
                 return False
             elif self._underextrusion_start_time + self.underextrusion_period < self.reactor.monotonic():
-                self._underextruding.set(True)
+                self._underextruding.set(True, eventtime)
                 return True
         elif self._underextrusion_start_time is not None:
-            self._underextruding.set(False)
+            self._underextruding.set(False, eventtime)
             self._underextrusion_start_time = None
 
         return False
 
-    def _unhealthy_changed(self, old_value, new_value):
+    def _unhealthy_changed(self, old_value, new_value, eventtime):
         logging.info(f"{self.name}: 'unhealthy' changed from {old_value} to {new_value}")
         if new_value is False:
             return
@@ -780,10 +853,10 @@ class HighResolutionFilamentSensor:
         else:
             self._respond_info("Became healthy again")
 
-    def _runout_changed(self, old_value, new_value):
+    def _runout_changed(self, old_value, new_value, eventtime):
         logging.info(f"{self.name}: 'runout' changed from {old_value} to {new_value}")
 
-    def _underextruding_changed(self, old_value, new_value):
+    def _underextruding_changed(self, old_value, new_value, eventtime):
         logging.info(f"{self.name}: 'underextruding' changed from {old_value} to {new_value}")
 
         if new_value:
@@ -801,20 +874,20 @@ class HighResolutionFilamentSensor:
 
         if not self._is_sensor_healthy():
             if not self._unhealthy:
-                self._unhealthy.set(True)
+                self._unhealthy.set(True, eventtime)
                 self._runout_event_handler(eventtime)
             return
         else:
-            self._unhealthy.set(False)
+            self._unhealthy.set(False, eventtime)
 
-        if self._is_runout_condition():
+        if self._is_runout_condition(eventtime):
             if not self._runout:
-                self._runout.set(True)
+                self._runout.set(True, eventtime)
                 self._runout_event_handler(eventtime)
             return
         else:
             # runout restored
-            self._runout.set(False)
+            self._runout.set(False, eventtime)
 
     def _sensor_update_event(self, eventtime):
         """ Periodic timer to fetch sensor data and update internal state. """

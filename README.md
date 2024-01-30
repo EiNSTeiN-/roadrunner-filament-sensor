@@ -98,6 +98,28 @@ hysteresis_bits: 3
 # two adjacent positions even when the filament is not moving.
 ```
 
+Two virtual pins are created for each sensor, which can be used to configure a [`filament_motion_sensor`](https://www.klipper3d.org/Config_Reference.html#filament_motion_sensor) or a [`filament_switch_sensor`](https://www.klipper3d.org/Config_Reference.html#filament_switch_sensor). This is mainly for convenience of use with user interfaces like mainsail/fluid. The virtual motion sensor will be triggered as soon as the sensor moves by the minimum detectable distance. The switch sensor will trigger when the IR sensor detects the filament is present. Both objects will work independently of the runout detection algorithm implemented in `high_resolution_filament_sensor` which considers additional factors such as underextrusion.
+
+An example configuration would look like:
+
+```
+[filament_motion_sensor roadrunner_motion]
+detection_length: 2
+extruder: extruder
+switch_pin: virtual_motion_sensor:roadrunner
+pause_on_runout: False
+runout_gcode: RESPOND TYPE=command MSG='Filament motion sensor detected a runout'
+event_delay: 0.1
+
+[filament_switch_sensor roadrunner_switch]
+extruder: extruder
+switch_pin: virtual_switch_sensor:roadrunner
+pause_on_runout: False
+runout_gcode: RESPOND TYPE=command MSG='Filament switch sensor detected filament is no longer present'
+event_delay: 0.1
+```
+
+
 ### Usage
 
 ##### Calibration cheat sheet
