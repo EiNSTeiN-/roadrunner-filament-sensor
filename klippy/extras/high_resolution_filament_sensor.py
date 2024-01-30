@@ -452,7 +452,7 @@ class HighResolutionFilamentSensor:
         self.name = config.get_name().split()[-1]
         self.printer = config.get_printer()
         self.gcode = self.printer.lookup_object('gcode')
-        self.buttons = self.printer.lookup_object('buttons')
+        self.buttons = self.printer.load_object(config, 'buttons')
         self.reactor = self.printer.get_reactor()
         self.runout_helper = RunoutHelper(config, self)
         self.estimated_print_time = None
