@@ -112,7 +112,6 @@ runout_gcode: RESPOND TYPE=command MSG='Filament motion sensor detected a runout
 event_delay: 0.1
 
 [filament_switch_sensor roadrunner_switch]
-extruder: extruder
 switch_pin: virtual_switch_sensor:roadrunner
 pause_on_runout: False
 runout_gcode: RESPOND TYPE=command MSG='Filament switch sensor detected filament is no longer present'
