@@ -188,18 +188,42 @@ class RegisterReaderI2C(RegisterReaderGeneric):
 class RegisterReaderSerial(RegisterReaderGeneric):
     def __init__(self, serial : serial.Serial):
         self.serial = serial
+        self.buffer = bytes()
 
     def read(self):
         try:
-            self.serial.write(bytearray([0xf5, SensorRegister.ALL]))
-
-            while self.serial.read(1) != '\x05' and self.serial.read(1) != '\xff':
-                pass
-
-            if self.serial.read(1) != chr(SensorRegister.ALL):
+            if self.serial.write(bytearray([0xf5, SensorRegister.ALL])) != 2:
+                logging.warning(f"Writing to serial failed")
                 return
 
-            data = self.serial.read(10)
+            while True:
+                data = self.serial.read()
+                if len(data) == 0:
+                    break
+                self.buffer += data
+
+            marker = None
+            for i in range(len(self.buffer)-1):
+                if self.buffer[i] == 0x05 and self.buffer[i+1] == 0xff:
+                    marker = i
+                    break
+
+            if marker is None:
+                logging.warning(f"Failed to find register marker in buffer")
+                self.buffer = bytes()
+                return
+
+            if len(self.buffer) < 13:
+                logging.warning(f"Not enough bytes read for response")
+                return
+
+            if (r := self.buffer[marker+2]) != SensorRegister.ALL:
+                logging.warning(f"Wrong register response ({r!r})")
+                self.buffer = self.buffer[marker+1:]
+                return
+
+            data = self.buffer[marker+3:marker+13]
+            self.buffer = self.buffer[marker+13:]
         except serial.SerialException:
             logging.error("Unable to communicate with sensor")
             return
@@ -400,7 +424,7 @@ class TriggerOnChange:
         self._value = value
 
     def __bool__(self):
-        return self._value
+        return bool(self._value)
     __nonzero__=__bool__
 
 class VirtualButtonWrapper:
@@ -533,7 +557,7 @@ class HighResolutionFilamentSensor:
         """ Connect the serial port, if necessary. """
         try:
             if self.serial_port:
-                ser = serial.Serial(self.serial_port, self.baud, timeout=0.05, write_timeout=0)
+                ser = serial.Serial(self.serial_port, self.baud, timeout=0.05, write_timeout=0.05)
                 self.regs = RegisterReaderSerial(ser)
         except serial.SerialException:
             raise self.printer.config_error(f"{self.name}: Could not connect to {self.serial_port}")
@@ -708,7 +732,7 @@ class HighResolutionFilamentSensor:
         self._inspect_commanded_move(eventtime)
 
         regs = self.regs.read()
-        self._sensor_connected.set(regs and regs.connected, eventtime)
+        self._sensor_connected.set(bool(regs and regs.connected), eventtime)
         if not self._sensor_connected:
             return
 
