@@ -62,7 +62,7 @@ extruder: extruder
 #  The extruder to which this sensor is attached
 uart_rx_pin: P0.0
 uart_tx_pin: P0.1
-#  TX and RX pins for UART communication, leave out if i2c is used (see below).
+#  TX and RX pins for UART communication, leave out if i2c or USB serial is used (see below).
 #i2c_address: 64
 #  The address of the sensor on the I2C bus, the default is 64 (0x40). Only
 #  change this if you attach more than one sensor on the same I2C bus.
@@ -70,6 +70,8 @@ uart_tx_pin: P0.1
 #  The mcu on which the sensor is connected.
 #i2c_bus: i2c1
 #  The I2C bus to which the sensor is connected on the mcu.
+#serial: /dev/serial/by-id/usb-Raspberry_Pi_Pico_E66130100F655734-if00
+#  The serial port over which the sensor is connected. Find with `ls -alh /dev/serial/by-id`.
 pause_on_runout: False
 #  Whether or not to pause the print automatically when a runout
 #  condition is triggered.

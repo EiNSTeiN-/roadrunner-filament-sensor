@@ -125,9 +125,13 @@ Now is time to flash the RP2040 and test your work!
 5. A drive named `RPI-RP2` will appear on your computer
 6. Copy the `.uf2` file to the `RPI-RP2` drive, the RP2040 will reboot and the LED will light up.
 
-##### Communication over UART or I2C?
+##### Communication over USB, UART or I2C?
 
-Both firmwares are available to provide options for all MCUs and toolhead boards. There's pros and cons to both, the main ones are listed below:
+Serial over USB, UART and I2C firmwares are available to provide options for all MCUs and toolhead boards. There's pros and cons to both, the main ones are listed below:
+
+**Serial over USB:**
+* Pro: More convenient for some configurations (no wiring required).
+* Con: Does not work when the sensor is connected to a toolhead board or the host does not have a USB port available.
 
 **UART:**
 * Pro: Good option for MCUs with limited number of pins or without native I2C support. I2C SDA/SCL pins are often special-purpose pins whereas any GPIOs can be used for UART TX/RX.

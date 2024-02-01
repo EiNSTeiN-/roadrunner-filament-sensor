@@ -1,6 +1,10 @@
 # Wiring
 
-There are two ways to communicate with the Roadrunner sensor: I2C or UART. Each has a respective firmware variant, and depending on which variant is flashed on the rp2040 board, you'll need to connect the Roadrunner to the printer correctly. 
+There are three ways to communicate with the Roadrunner sensor:
+* I2C or UART connected to any MCU, or
+* Serial over USB connected to the host.
+
+Each has a respective firmware variant, and depending on which variant is flashed on the rp2040 board, you'll need to connect the Roadrunner to the printer correctly.
 
 ### UART
 
@@ -13,6 +17,10 @@ Native I2C communication requires special purpose pins to be available on a micr
 To find out which buses are compiled into your version of klipper, download `klipper.log` and search for `BUS_PINS_i2c`. There will be one line for each MCU with all i2c buses listed by name with the corresponding pins.
 
 Below are some of the common boards you might want to connect this sensor to.
+
+### Serial over USB
+
+Simply connect over USB, you can leave out the bottom wire cover.
 
 #### BTT SB2209/SB2240 (stm32 mcu)
 
