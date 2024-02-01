@@ -716,14 +716,15 @@ class HighResolutionFilamentSensor:
     def _filament_present_changed(self, old_value, new_value, eventtime):
         logging.info(f"{self.name}: 'filament_present' changed from {old_value} to {new_value}")
 
+        for cb in self._switch_callbacks:
+            cb(eventtime, new_value)
+
         if old_value is None:
             return
         if new_value:
             self._respond_info("Filament present")
         else:
             self._respond_error("Filament not present")
-        for cb in self._switch_callbacks:
-            cb(eventtime, new_value)
 
     def _update_state_from_sensor(self):
         """ Read data from sensor and sets the internal state to match. """
