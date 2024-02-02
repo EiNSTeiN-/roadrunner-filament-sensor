@@ -735,8 +735,6 @@ class HighResolutionFilamentSensor:
 
         extruder_move = self._extruder_move_queue.find_move_at_time(eventtime)
         if extruder_move and self._current_extruder_move != extruder_move:
-            logging.info(f"at {eventtime} extruder move from queue is {extruder_move.eventtime}")
-
             move = CommandedMove(eventtime, self.position, extruder_move.start_pos, extruder_move.end_pos)
             self._commanded_moves.insert(0, move)
             self._current_extruder_move = extruder_move
