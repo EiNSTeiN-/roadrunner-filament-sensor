@@ -409,6 +409,59 @@ class CommandedMove:
         """ Returns which way the extruder is moving given a positive or negative distance value. """
         return MotionDirection(self.measured_distance)
 
+class ExtruderMove:
+    """ A copy of a move in the extruder queue. """
+
+    def __init__(self, eventtime, start_pos, end_pos, accel_t, cruise_t, decel_t, start_v, cruise_v, accel, can_pressure_advance):
+        self.eventtime = eventtime
+        self.start_pos = start_pos
+        self.end_pos = end_pos
+        self.distance = abs(end_pos - start_pos)
+        self.retract = end_pos - start_pos < 0.
+        self.accel_t = accel_t
+        self.cruise_t = cruise_t
+        self.decel_t = decel_t
+        self.move_t = accel_t + cruise_t + decel_t
+        self.start_v = start_v
+        self.cruise_v = cruise_v
+        self.accel = accel
+        self.can_pressure_advance = can_pressure_advance
+
+    def __repr__(self):
+        return f"ExtruderMove(eventtime={self.eventtime}, start_pos={self.start_pos}, end_pos={self.end_pos}, distance={self.distance}, " \
+                f"accel_t={self.accel_t}, cruise_t={self.cruise_t}, decel_t={self.decel_t}, move_t={self.move_t}, " \
+                f"start_v={self.start_v}, cruise_v={self.cruise_v}, accel={self.accel}, can_pressure_advance={self.can_pressure_advance!r})"
+
+class ExtruderMoveQueue:
+    """ Holds future extruder moves. """
+
+    def __init__(self):
+        self.queue : list[ExtruderMove] = []
+
+    def add(self, eventtime, move):
+        start_pos = move.start_pos[3]
+        end_pos = move.end_pos[3]
+        axis_r = move.axes_r[3]
+        accel = move.accel * axis_r
+        start_v = move.start_v * axis_r
+        cruise_v = move.cruise_v * axis_r
+        can_pressure_advance = bool(axis_r > 0. and (move.axes_d[0] or move.axes_d[1]))
+
+        move = ExtruderMove(eventtime, start_pos, end_pos, move.accel_t, move.cruise_t, move.decel_t, start_v, cruise_v, accel, can_pressure_advance)
+        self.queue.append(move)
+
+    def advance_time(self, now):
+        while len(self.queue) > 0:
+            if self.queue[0].eventtime > now:
+                break
+            # event is in the past, remove it
+            self.queue.pop(0)
+
+    def find_move_at_time(self, eventtime):
+        for move in self.queue:
+            if eventtime > move.eventtime:
+                return move
+
 class TriggerOnChange:
     """ Calls a function when the value is changed from False to True, only once. """
 
@@ -479,7 +532,7 @@ class HighResolutionFilamentSensor:
         self.buttons = self.printer.load_object(config, 'buttons')
         self.reactor = self.printer.get_reactor()
         self.runout_helper = RunoutHelper(config, self)
-        self.estimated_print_time = None
+        self.main_mcu = None
 
         # Configuration
         self.serial_port = config.get("serial", None)
@@ -502,6 +555,8 @@ class HighResolutionFilamentSensor:
 
         # Printer state
         self._commanded_moves : list[CommandedMove] = []
+        self._extruder_move_queue = ExtruderMoveQueue()
+        self._current_extruder_move = None
         self._capture_history : bool = False
         self.position = 0.0
         self._is_printing = False
@@ -510,7 +565,6 @@ class HighResolutionFilamentSensor:
         self._runout = TriggerOnChange(False, self._runout_changed)
         self._underextrusion_start_time = None
         self._underextruding = TriggerOnChange(False, self._underextruding_changed)
-        self._last_epos = 0.0
         self._status_evaluation_move = None
 
         # virtual pins for native klipper module compatibility
@@ -532,7 +586,6 @@ class HighResolutionFilamentSensor:
         self.printer.register_event_handler('idle_timeout:printing', self._handle_printing)
         self.printer.register_event_handler('idle_timeout:ready', self._handle_not_printing)
         self.printer.register_event_handler('idle_timeout:idle', self._handle_not_printing)
-        self.printer.register_event_handler('toolhead:set_position', self._toolhead_set_position)
         self.printer.register_event_handler('homing:homing_move_begin', self._handle_homing_begin)
         self.printer.register_event_handler('homing:homing_move_end', self._handle_homing_end)
 
@@ -595,13 +648,6 @@ class HighResolutionFilamentSensor:
             raise ppins.error("%s uart rx and tx pins must be on the same mcu")
 
         return SensorUART(rx_pin_params, tx_pin_params, None)
-
-    def _toolhead_set_position(self):
-        """ Callback when kinematic position is set for the toolhead.
-        This changes the current toolhead position without moving. """
-        if self.toolhead.get_extruder() is self.extruder:
-            # toolhead position was updated without a move, keep track of this
-            self._last_epos = self.toolhead.get_position()[3]
 
     def _measured_underextrusion_rate(self, move):
         """ Return a measure of how much we are actually extruding
@@ -668,17 +714,17 @@ class HighResolutionFilamentSensor:
             "position": self.position,
         }
 
-    def _get_extruder_pos(self, eventtime=None):
+    def _get_extruder_pos(self, eventtime):
         """ Find the estimated extruder position at the given eventtime. """
+        if self.main_mcu:
+            print_time = self.main_mcu.estimated_print_time(eventtime)
+            return self.extruder.find_past_position(print_time)
 
-        if self.estimated_print_time is None:
-            return None
-
-        if eventtime is None:
-            eventtime = self.reactor.monotonic()
-
-        print_time = self.estimated_print_time(eventtime)
-        return self.extruder.find_past_position(print_time)
+    def _capture_extruder_move(self, move_time, move):
+        clock_time = self.main_mcu.print_time_to_clock(move_time)
+        eventtime = self.main_mcu._clocksync.estimate_clock_systime(clock_time)
+        self._extruder_move_queue.add(eventtime, move)
+        return self.orig_extruder_move(move_time, move)
 
     def _inspect_commanded_move(self, eventtime):
         """ Check if the commanded position of the extruder has changed and
@@ -687,18 +733,15 @@ class HighResolutionFilamentSensor:
         if self.toolhead.get_extruder() is not self.extruder:
             return
 
-        epos = self.toolhead.get_position()[3]
-        distance = epos - self._last_epos
-        if distance != 0.:
-            previous_event = None
-            if len(self._commanded_moves) > 0:
-                move = self._commanded_moves[0]
-                move.ended = True
-                previous_event = move.last_event
+        extruder_move = self._extruder_move_queue.find_move_at_time(eventtime)
+        if extruder_move and self._current_extruder_move != extruder_move:
+            logging.info(f"at {eventtime} extruder move from queue is {extruder_move.eventtime}")
 
-            move = CommandedMove(eventtime, self.position, previous_event.epos if previous_event else self._last_epos, epos)
+            move = CommandedMove(eventtime, self.position, extruder_move.start_pos, extruder_move.end_pos)
             self._commanded_moves.insert(0, move)
-            self._last_epos = move.epos
+            self._current_extruder_move = extruder_move
+
+        self._extruder_move_queue.advance_time(eventtime)
 
         while len(self._commanded_moves) > 100:
             self._commanded_moves.pop()
@@ -766,7 +809,11 @@ class HighResolutionFilamentSensor:
 
         self.toolhead = self.printer.lookup_object('toolhead')
         self.extruder = self.printer.lookup_object(self.extruder_name)
-        self.estimated_print_time = self.printer.lookup_object('mcu').estimated_print_time
+        self.main_mcu = self.printer.lookup_object('mcu')
+
+        self.orig_extruder_move = self.extruder.move
+        self.extruder.move = self._capture_extruder_move
+
         self.reactor.update_timer(self._sensor_update_timer, self.reactor.NOW)
 
     def _handle_homing_begin(self, hmove):
@@ -781,9 +828,10 @@ class HighResolutionFilamentSensor:
         """ Callback when printing starts. """
 
         logging.info("[%s] printing" % (self.__class__.__name__, ))
-        self._runout.set(False, print_time)
+        eventtime = self.main_mcu.print_time_to_clock(print_time)
+        self._runout.set(False, eventtime)
         self._underextrusion_start_time = None
-        self._underextruding.set(False, print_time)
+        self._underextruding.set(False, eventtime)
         self._is_printing = True
         self.clear_move_queue()
         self._status_evaluation_move = None
