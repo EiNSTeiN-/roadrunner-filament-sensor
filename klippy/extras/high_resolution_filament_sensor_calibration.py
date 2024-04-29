@@ -511,7 +511,7 @@ class HighResolutionFilamentSensorCalibration:
                     gcmd.respond_raw(f"!! Stopping at {vflow:.2f}mm³/s\n")
                     break
                 vflow += step
-            self._compute_max_flow_result(gcmd, runs, count, stop_vflow)
+            self._compute_max_flow_result(gcmd, runs, stop_vflow)
         finally:
             self._turn_off_heater(gcmd)
 
