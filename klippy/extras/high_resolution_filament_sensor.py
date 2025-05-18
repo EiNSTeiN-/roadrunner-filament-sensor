@@ -720,11 +720,11 @@ class HighResolutionFilamentSensor:
             print_time = self.main_mcu.estimated_print_time(eventtime)
             return self.extruder.find_past_position(print_time)
 
-    def _capture_extruder_move(self, move_time, move):
+    def _capture_extruder_move(self, move_time, move, ea_index):
         clock_time = self.main_mcu.print_time_to_clock(move_time)
         eventtime = self.main_mcu._clocksync.estimate_clock_systime(clock_time)
         self._extruder_move_queue.add(eventtime, move)
-        return self.orig_extruder_move(move_time, move)
+        return self.orig_extruder_process_move(move_time, move, ea_index)
 
     def _inspect_commanded_move(self, eventtime):
         """ Check if the commanded position of the extruder has changed and
@@ -809,8 +809,8 @@ class HighResolutionFilamentSensor:
         self.extruder = self.printer.lookup_object(self.extruder_name)
         self.main_mcu = self.printer.lookup_object('mcu')
 
-        self.orig_extruder_move = self.extruder.move
-        self.extruder.move = self._capture_extruder_move
+        self.orig_extruder_process_move = self.extruder.process_move
+        self.extruder.process_move = self._capture_extruder_move
 
         self.reactor.update_timer(self._sensor_update_timer, self.reactor.NOW)
 
