@@ -22,6 +22,10 @@ Below are some of the common boards you might want to connect this sensor to.
 
 Simply connect over USB, you can leave out the bottom wire cover.
 
+### UART Serial
+
+This was introduced to allow user connection many Serial UART devices to one USB port. With combination with [Pi Pico USB-UART and I2C Bridge](https://github.com/8086net/pico-sexa-uart-bridge) you could connect 6 different UART devices over one USB port.
+
 #### BTT SB2209/SB2240 (stm32 mcu)
 
 Schematics: [SB2209](https://github.com/bigtreetech/EBB/blob/master/EBB%20SB2240_2209%20CAN/SB2209/Hardware/SB2209.png), [SB2240](https://github.com/bigtreetech/EBB/blob/master/EBB%20SB2240_2209%20CAN/SB2240/Hardware/SB2240.png)
