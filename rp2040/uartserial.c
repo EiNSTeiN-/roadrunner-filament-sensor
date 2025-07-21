@@ -7,7 +7,7 @@
 
 #include "uartserial.h"
 
-#define SERIAL_BAUD 250000
+#define SERIAL_BAUD 115200
 
 #define UART_INST uart1
 #define UART_TX_PIN 4
@@ -21,8 +21,6 @@ void uartserial_init()
     uart_init(UART_INST, SERIAL_BAUD);
     gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
     gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
-    uart_set_hw_flow(UART_INST, false, false);
-    uart_set_format(UART_INST, DATA_BITS, STOP_BITS, PARITY);
     uart_set_fifo_enabled(UART_INST, true);
     stdio_uart_init_full(UART_INST, SERIAL_BAUD, UART_TX_PIN, UART_RX_PIN);
 }
@@ -38,14 +36,16 @@ uint8_t uartserial_getc()
 void uartserial_read(uint8_t *buf, size_t len)
 {
     for(size_t i=0; i<len; i++)
-        buf[i] = getchar_timeout_us(0);
+        // buf[i] = getchar_timeout_us(0);
+        buf[i] = uart_getc(UART_INST);
 }
 
 void uartserial_write(uint8_t *buf, size_t len)
 {
     for(size_t i=0; i<len; i++)
-        putchar_raw(buf[i]);
-    stdio_flush();
+        // putchar_raw(buf[i]);
+        uart_putc_raw(UART_INST,buf[i]);
+    // stdio_flush();
 }
 
 bool uartserial_sync()
