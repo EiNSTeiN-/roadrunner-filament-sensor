@@ -12,6 +12,7 @@
 * **Small and light** at half the size of some commercial products
 * **Helps determine runout reason** between filament runout, filament jams, or partial under-extrusion
 * **2-wire communication** with mcu, over UART or I2C (suits most boards)
+* **Host communication** over UART Serial or Serial over USB
 * **Calibrates max flow** with helpful gcode command.
 
 Most 3D printer motion sensors are bulky, slow to trigger, prone to false positives, and have a high detection distance meaning a large amount material is extruded before actually detecting a runout, leading to poor layer adhesion and failed prints after a runout.
