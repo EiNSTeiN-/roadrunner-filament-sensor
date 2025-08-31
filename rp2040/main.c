@@ -18,6 +18,7 @@
 #include "tmcuart.h"
 #include "i2c_target.h"
 #include "usbserial.h"
+#include "uartserial.h" 
 
 //#define IS_I2C_TARGET 1 // uncomment for i2c communication with printer
 //#define USB_SERIAL_COMMS 1 // uncomment for serial over usb communication with printer
@@ -184,6 +185,8 @@ int main() {
     i2c_target_init();
 #elif defined(USB_SERIAL_COMMS) && USB_SERIAL_COMMS
     usbserial_init();
+#elif defined(UART_SERIAL_COMMS) && UART_SERIAL_COMMS
+    uartserial_init();
 #else
     tmcuart_init();
 #endif
@@ -214,6 +217,8 @@ int main() {
 
 #if defined(USB_SERIAL_COMMS) && USB_SERIAL_COMMS
         usbserial_loop();
+#elif defined(UART_SERIAL_COMMS) && UART_SERIAL_COMMS
+        uartserial_loop();
 #elif !defined(IS_I2C_TARGET) || !IS_I2C_TARGET
         tmcuart_loop();
 #endif
